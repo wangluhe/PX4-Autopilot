@@ -35,7 +35,6 @@
  */
 
 #include "FlightTaskAuto.hpp"
-#include <mathlib/mathlib.h>
 #include <float.h>
 
 using namespace matrix;
@@ -127,10 +126,6 @@ bool FlightTaskAuto::update()
 		_position_setpoint.setNaN(); // Don't require any position/velocity setpoints
 		_velocity_setpoint.setNaN();
 		_acceleration_setpoint = Vector3f(0.f, 0.f, 100.f); // High downwards acceleration to make sure there's no thrust
-		break;
-
-	case WaypointType::land:
-		_prepareLandSetpoints();
 		break;
 
 	case WaypointType::velocity:
@@ -229,83 +224,6 @@ void FlightTaskAuto::rcHelpModifyYaw(float &yaw_sp)
 	}
 }
 
-void FlightTaskAuto::_prepareLandSetpoints()
-{
-	_velocity_setpoint.setNaN(); // Don't take over any smoothed velocity setpoint
-
-	// Slow down automatic descend close to ground
-	float vertical_speed = math::interpolate(_dist_to_ground,
-			       _param_mpc_land_alt2.get(), _param_mpc_land_alt1.get(),
-			       _param_mpc_land_speed.get(), _param_mpc_z_vel_max_dn.get());
-
-	bool range_dist_available = PX4_ISFINITE(_dist_to_bottom);
-
-	if (range_dist_available && _dist_to_bottom <= _param_mpc_land_alt3.get()) {
-		vertical_speed = _param_mpc_land_crawl_speed.get();
-	}
-
-	if (_type_previous != WaypointType::land) {
-		// initialize yaw and xy-position
-		_land_heading = _yaw_setpoint;
-		_stick_acceleration_xy.resetPosition(Vector2f(_target(0), _target(1)));
-		_initial_land_position = Vector3f(_target(0), _target(1), NAN);
-	}
-
-	// Update xy-position in case of landing position changes (etc. precision landing)
-	_land_position = Vector3f(_target(0), _target(1), NAN);
-
-	// User input assisted landing
-	if (_param_mpc_land_rc_help.get() && _sticks.checkAndUpdateStickInputs()) {
-		// Stick full up -1 -> stop, stick full down 1 -> double the speed
-		vertical_speed *= (1 - _sticks.getThrottleZeroCenteredExpo());
-
-		rcHelpModifyYaw(_land_heading);
-
-		Vector2f sticks_xy = _sticks.getPitchRollExpo();
-		Vector2f sticks_ne = sticks_xy;
-		Sticks::rotateIntoHeadingFrameXY(sticks_ne, _yaw, _land_heading);
-
-		const float distance_to_circle = math::trajectory::getMaxDistanceToCircle(_position.xy(), _initial_land_position.xy(),
-						 _param_mpc_land_radius.get(), sticks_ne);
-		float max_speed;
-
-		if (PX4_ISFINITE(distance_to_circle)) {
-			max_speed = math::trajectory::computeMaxSpeedFromDistance(_stick_acceleration_xy.getMaxJerk(),
-					_stick_acceleration_xy.getMaxAcceleration(), distance_to_circle, 0.f);
-
-			if (max_speed < 0.5f) {
-				sticks_xy.setZero();
-			}
-
-		} else {
-			max_speed = 0.f;
-			sticks_xy.setZero();
-		}
-
-		// If ground distance estimate valid (distance sensor) during nudging then limit horizontal speed
-		if (PX4_ISFINITE(_dist_to_bottom)) {
-			// Below 50cm no horizontal speed, above allow per meter altitude 0.5m/s speed
-			max_speed = math::max(0.f, math::min(max_speed, (_dist_to_bottom - .5f) * .5f));
-		}
-
-		_stick_acceleration_xy.setVelocityConstraint(max_speed);
-		_stick_acceleration_xy.generateSetpoints(sticks_xy, _yaw, _land_heading, _position,
-				_velocity_setpoint_feedback.xy(), _deltatime);
-		_stick_acceleration_xy.getSetpoints(_land_position, _velocity_setpoint, _acceleration_setpoint);
-
-	} else {
-		// Make sure we have a valid land position even in the case we loose RC while amending it
-		if (!PX4_ISFINITE(_land_position(0))) {
-			_land_position.xy() = Vector2f(_position);
-		}
-	}
-
-	_position_setpoint = _land_position; // The last element of the land position has to stay NAN
-	_yaw_setpoint = _land_heading;
-	_velocity_setpoint(2) = vertical_speed;
-	_gear.landing_gear = landing_gear_s::GEAR_DOWN;
-}
-
 void FlightTaskAuto::_limitYawRate()
 {
 	const float yawrate_max = math::radians(_param_mpc_yawrauto_max.get());
@@ -353,8 +271,8 @@ bool FlightTaskAuto::_evaluateTriplets()
 	// then previous will be set to current vehicle position and next will be set equal to setpoint.
 	//
 	// 3. navigator originally only supports gps guided maneuvers. However, it now also supports some flow-specific features
-	// such as land and takeoff. The navigator should use for auto takeoff/land with flow the position in xy at the moment the
-	// takeoff/land was initiated. Until then we do this kind of logic here.
+	// such as takeoff. The navigator should use for auto takeoff with flow the position in xy at the moment the
+	// takeoff was initiated. Until then we do this kind of logic here.
 
 	// Check if triplet is valid. There must be at least a valid altitude.
 
