@@ -37,3 +37,5 @@ px4_add_module(
 		px4_simple_app.c
 	DEPENDS
 	)
+# MODULE块是模块的唯一固件名称（按照惯例，模块名称的前缀是src之后的父路径）
+# MAIN块列出了模块的入口点，它将命令注册到 NuttX，以便可以从 PX4 shell 或 SITL 控制台调用它。
