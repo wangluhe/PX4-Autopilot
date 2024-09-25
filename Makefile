@@ -35,9 +35,27 @@
 #
 # We depend on our submodules, so we have to prevent attempts to
 # compile without it being present.
+
+# Makefile 可以视为 Make的操作指令文档, 指导 Make 成一系列的操作.
+# Makefile 的语法杂糅了 c 以及 sh 的特点, 其中包括了基本的逻辑判断和变量定义语法.
+# Makefile 中最核心的部分是编译指导语句
+# targets: prerequisites
+# 	recipes
+# 其中的 targets 是编译目标,
+# prerequisites 是编译依赖项 (它可以依赖于其他一些更基础的依赖项),
+# recipes 是要执行的一系列指令, 这些指令传给 shell 来执行. Makefile 要求 recipes 行的开头必须以一个 tab 开头,
+# 同时如果一行太长的话可以通过 \ 符号进行分割, 下一行同样必须以 tab 开始,
+# make 会自动把 \ 及上下的空白字符串(空格和tab) 替换为单个空格.
+# wildcard 通配符, 例:$(wildcard *.h)
+# 返回匹配到的所有头文件
 ifeq ($(wildcard .git),)
     $(error YOU HAVE TO USE GIT TO DOWNLOAD THIS REPOSITORY. ABORTING.)
 endif
+
+# 接下来是帮助说明, 意思就是不要害怕这个 Makefile,
+# 这个 Makefile 文件主要是用来向 cmake 传参的,
+# 并列出了二次开发可能主要用到的
+# make px4_fmu-v2_default 等几个指令.
 
 # Help
 # --------------------------------------------------------------------
@@ -58,10 +76,17 @@ endif
 
 # explicity set default build target
 all: px4_sitl_default
+# 接下来设置默认的编译目标, make 把遇到的第一个编译目标设置成默认目标,
+# 这里的 target 是 all, 而prerequisites 是
+# px4_sitl_default,同时这里没有 recipes 部分,
+# 对于没有 recipes 的编译目标, make 则总会尝试去更新他的依赖项,
+# 这里是 px4_sitl_default
 
 # define a space character to be able to explicitly find it in strings
 space := $(subst ,, )
-
+# 接下来是利用 subst 函数生成一个空格,
+# subst 函数的用法为 $(subst 模式字符串, 替换字符串, 原始字符串),
+# 在原始字符串中搜索模式字符串并用替换字符串替换.
 define make_list
      $(shell [ -f .github/workflows/compile_${1}.yml ] && cat .github/workflows/compile_${1}.yml | sed -E 's|[[:space:]]+(.*),|check_\1|g' | grep check_${2})
 endef
@@ -71,16 +96,33 @@ endef
 # assume 1st argument passed is the main target, the
 # rest are arguments to pass to the makefile generated
 # by cmake in the subdirectory
+# 这里通过make 的环境变量 $(MAKECMDGOALS)获取用户制定的编译目标,
+# 并通过 $(firstword $(MAKECMDGOALS)) 函数获取第一个值,
+# 用$(wordlist 2,$(words $(MAKECMDGOALS)), $(MAKECMDGOALS))
+# 第一个之外的其他目标值. 例如在终端中输入 > make px4_sitl_default gazebo 时,
+# FIRST_ARG 将获取到px4_sitl_default , 而ARGS 将获取到 gazebo
+
 FIRST_ARG := $(firstword $(MAKECMDGOALS))
 ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 
 # Get -j or --jobs argument as suggested in:
+# 按照以下建议获取-j或--jobs参数
 # https://stackoverflow.com/a/33616144/8548472
 MAKE_PID := $(shell echo $$PPID)
 j := $(shell ps T | sed -n 's|.*$(MAKE_PID).*$(MAKE).* \(-j\|--jobs\) *\([0-9][0-9]*\).*|\2|p')
 
 # Default j for clang-tidy
+# 选项是设置开多少 jobs 进行 Make 并行执行
 j_clang_tidy := $(or $(j),4)
+
+# 接着设置是否用构建工具 ninja 生成 CMake 文件.
+# ifndf... else ... endif 含义为如果没有定义则执行, 否则执行... ,
+# 而ifdef... else... endif 则反之. 由于默认没有设置 NO_NINJA_BUILD
+# 所以会尝试设置编译生成器为Ninja.
+# 如果尝试失败了,则在 windows 上编译生成器目标会设置为 MSYS Makefiles,
+# 在 Linux 上则会编译生成器目标会设置为Unix Makefiles.
+#  Ninja 是一个比 Make 要轻量级的编译系统.
+
 
 NINJA_BIN := ninja
 ifndef NO_NINJA_BUILD
@@ -120,6 +162,9 @@ else
 	PX4_MAKE_ARGS = -j$(j) --no-print-directory
 endif
 
+# 然后, 获取了源码所在的路径, 首先用 lastword 函数获取了当前的 Makefile
+# 的名称, 然后用realpath 获取了这个 Makefile 的完整路径,
+# 最后调用 shell 的 dirname 命令获取了文件的目录路径.
 SRC_DIR := $(shell dirname "$(realpath $(lastword $(MAKEFILE_LIST)))")
 
 # check if replay env variable is set & set build dir accordingly
@@ -132,6 +177,7 @@ endif
 CMAKE_ARGS ?=
 
 # additional config parameters passed to cmake
+# 接下来给 cmake 添加了一些选项. 包括是否包括外部模块, 及 cmake 的build 的类型
 ifdef EXTERNAL_MODULES_LOCATION
 	override CMAKE_ARGS += -DEXTERNAL_MODULES_LOCATION:STRING=$(EXTERNAL_MODULES_LOCATION)
 endif
@@ -175,6 +221,23 @@ endif
 # Functions
 # --------------------------------------------------------------------
 # describe how to build a cmake config
+# 接着这里定义了两个函数, 第一个是后面编译各个选项时主要用到的 cmake-build,
+# 另一个是用来检查之前的cmake 编译生成的 cache 是否和
+# 当前的编译选项一致的 cmake-cache-check. 在cmake-build
+# 中调用了cmake-cache-check 来确定是否需要重新生成目录和编译配置文件.
+
+# 首先设置 BUILD_DIR 为 $(SRC_DIR)/build/$(1), 即path/to/Firmware/build/px4_sitl_default,
+# 其中$(1) 引用了第一个参数, 即px4_sitl_default
+# 二句解释了第三句的主要功能是检查是否之前编译过该目标,
+# 如果没有或者和上一次编译该目标的一些编译选项设置的不一样就设置
+# 就创建该BUILD_DIR 这里是
+# path/to/Firmware/build/px4_sitl_default, 并进入,
+# 然后执行cmake "/path/to/source/" -G"Ninja" -DCONFIG=px4_sitl_default
+# 来读取CMakeLists.txt 生成Ninja 的编译配置文件;
+# 第四句主要是清理编译目标文件; 第五到十一句判断当前是否需要生成编译配置文件;
+# 第十二到第十三句执行cmake --build /path/to/Firmware/build/px4_sitl_default --,
+# 其中 $(PX4_MAKE_ARGS) 和 $(ARGS) 并替换成了空值.
+
 define cmake-build
 	$(eval override CMAKE_ARGS += -DCONFIG=$(1))
 	@$(eval BUILD_DIR = "$(SRC_DIR)/build/$(1)")
@@ -214,7 +277,7 @@ NO_COLOR   = \033[m
 define colorecho
 +@echo -e '${COLOR_BLUE}${1} ${NO_COLOR}'
 endef
-
+# 获取所有的飞控的编译文件
 # Get a list of all config targets boards/*/*.px4board
 ALL_CONFIG_TARGETS := $(shell find boards -maxdepth 3 -mindepth 3 -name '*.px4board' -print | sed -e 's|boards\/||' | sed -e 's|\.px4board||' | sed -e 's|\/|_|g' | sort)
 
@@ -222,6 +285,7 @@ ALL_CONFIG_TARGETS := $(shell find boards -maxdepth 3 -mindepth 3 -name '*.px4bo
 # --------------------------------------------------------------------
 #  Do not put any spaces between function arguments.
 
+# 接着定义了所有编译选项的默认编译方式和以_default结尾的编译选项的编译方式.
 # All targets.
 $(ALL_CONFIG_TARGETS):
 	@$(call cmake-build,$@$(BUILD_DIR_SUFFIX))
@@ -230,7 +294,8 @@ $(ALL_CONFIG_TARGETS):
 CONFIG_TARGETS_DEFAULT := $(patsubst %_default,%,$(filter %_default,$(ALL_CONFIG_TARGETS)))
 $(CONFIG_TARGETS_DEFAULT):
 	@$(call cmake-build,$@_default$(BUILD_DIR_SUFFIX))
-
+# 其中$@ 代表的是工作目标, 这里即px4_sitl
+# 然后调用 cmake-build 函数
 all_config_targets: $(ALL_CONFIG_TARGETS)
 all_default_targets: $(CONFIG_TARGETS_DEFAULT)
 
@@ -238,6 +303,7 @@ updateconfig:
 	@./Tools/kconfig/updateconfig.py
 
 # board reorganization deprecation warnings (2018-11-22)
+# 定义了一个辅助函数, 和固件编译配置
 define deprecation_warning
 	$(warning $(1) has been deprecated and will be removed, please use $(2)!)
 endef
@@ -247,7 +313,7 @@ endef
 
 # Other targets
 # --------------------------------------------------------------------
-
+# 分别设置 gqc 可以上传固件的编译选项
 .PHONY: qgc_firmware px4fmu_firmware misc_qgc_extra_firmware
 
 # QGroundControl flashable NuttX firmware
@@ -272,6 +338,7 @@ misc_qgc_extra_firmware: \
 	check_airmind_mindpx-v2_default \
 	sizes
 
+# 获取 elf 文件的大小
 .PHONY: sizes check quick_check uorb_graphs
 
 sizes:
@@ -597,3 +664,6 @@ failsafe_web:
 run_failsafe_web_server: failsafe_web
 	@cd build/px4_sitl_default_failsafe_web && \
 		python3 -m http.server
+
+
+
