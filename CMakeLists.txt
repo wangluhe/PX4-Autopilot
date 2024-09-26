@@ -101,17 +101,26 @@
 
 cmake_minimum_required(VERSION 3.9 FATAL_ERROR)
 
+# 第一句设置PX4_SOURCE_DIR 的值为 ${CMAKE_CURRENT_SOURCE_DIR}, 该值是一个CMAKE内置变量,
+# 表示的是当前的正在处理的 CMakeLists.txt 所在文件夹的路径, CMake 中还有另一个变量 CMAKE_SOURCE_DIR
+# 表示的是当前编译项目的入口 CMakeLists.txt 所在的文件夹路径.
+# 第二句设置 PX4_BINARY_DIR 的值为 ${CMAKE_CURRENT_BINARY_DIR} 路径, 该值表示的是当前编译的二进制文件夹的位置.
 set(PX4_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE FILEPATH "PX4 source directory" FORCE)
 set(PX4_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}" CACHE FILEPATH "PX4 binary directory" FORCE)
 
 list(APPEND CMAKE_MODULE_PATH ${PX4_SOURCE_DIR}/cmake)
+# 把 ${PX4_SOURCE_DIR}/cmake 添加到模块的搜索路径中.
+# 这个文件夹对应着 /path/to/Firmware/cmake,
+# 文件夹下有一些模块
 include(px4_parse_function_args)
 
 #=============================================================================
 # git
 #
+# 导入 px4_git 模块,
+# 其中定义了px4_add_git_submodule 模块, 主要用来更新模块.
 include(px4_git)
-
+# 获取到当前版本号放到 PX4_GIT_TAG 变量中.
 execute_process(
 	COMMAND git describe --exclude ext/* --tags --match "v[0-9]*"
 	OUTPUT_VARIABLE PX4_GIT_TAG
@@ -144,6 +153,9 @@ list(GET PX4_VERSION_PATCH 0 PX4_VERSION_PATCH)
 string(REGEX MATCH "g([a-f0-9]+)$" GIT_HASH "${PX4_GIT_TAG}")
 set(PX4_GIT_HASH ${CMAKE_MATCH_1})
 
+# 定义了两个值为空的全局属性 PX4_MODULE_LIBRARIES 和 PX4_MODULE_PATHS ,
+# 其中PX4_MODULE_LIBRARIES 为所有 PX4 的模块库的列表,
+# PX4_MODULE_PATHS 为所有 PX4 模块的路径.
 define_property(GLOBAL PROPERTY PX4_MODULE_LIBRARIES
                  BRIEF_DOCS "PX4 module libs"
                  FULL_DOCS "List of all PX4 module libraries"
@@ -168,6 +180,8 @@ define_property(GLOBAL PROPERTY PX4_SRC_FILES
 # configuration
 #
 
+# px4_add_module.cmake 中定义了 px4_add_module 函数用来添加对不同平台的一些编译选项.
+# 同时 set 了 config_module_list 和 config_kernel_list.
 include(px4_add_module)
 set(config_module_list)
 set(config_kernel_list)
@@ -209,6 +223,7 @@ if(${PX4_PLATFORM} STREQUAL "posix")
 endif()
 
 # external modules
+# 添加外部模块路径
 set(EXTERNAL_MODULES_LOCATION "" CACHE STRING "External modules source location")
 
 if(NOT EXTERNAL_MODULES_LOCATION STREQUAL "")
@@ -217,9 +232,13 @@ endif()
 
 set_property(GLOBAL PROPERTY PX4_MODULE_CONFIG_FILES)
 
+# 导入px4_impl_os.cmake 中针对于特定操作系统的一些命令,
+# 这些命令用来生成一些程序源码和执行一些文件操作.
+# 并把对应于这个platform 的cmake文件夹放到 CMAKE_MODULE_PATH 中.
 include(platforms/${PX4_PLATFORM}/cmake/px4_impl_os.cmake)
 list(APPEND CMAKE_MODULE_PATH ${PX4_SOURCE_DIR}/platforms/${PX4_PLATFORM}/cmake)
 
+# 导入初始化cmake 文件
 if(EXISTS "${PX4_SOURCE_DIR}/platforms/${PX4_PLATFORM}/cmake/init.cmake")
 	include(init)
 endif()
@@ -227,6 +246,7 @@ endif()
 #=============================================================================
 # project definition
 #
+# 设置项目名称为px4 语言为 CXX C ASM,
 project(px4 CXX C ASM)
 
 # CMake build type (Debug Release RelWithDebInfo MinSizeRel Coverage)
@@ -267,6 +287,7 @@ endif()
 
 set(package-contact "px4users@googlegroups.com")
 
+# 同时设置了包的沟通方式以及有关编程语言的一些编译设置和是否导出设置.
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)

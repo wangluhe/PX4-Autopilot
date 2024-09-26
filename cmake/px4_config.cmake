@@ -42,6 +42,11 @@ if(NOT CONFIG)
 		set(CONFIG "px4_sitl_default" CACHE STRING "desired configuration")
 	endif()
 endif()
+# boards 文件夹下所有子文件包括的cmake 文件中查找CONFIG 对应的 .cmake 文件,
+# 比如当 CONFIG 的值为px4_sitl_default 是查找的文件为px4/sitl/default.cmake.
+# 对于每个通配符匹配到的.cmake 文件,把文件路径切分为三部分分别放入vendor, model和label 变量中,
+# 例如对于 aerotenna/ocpoc/ubuntu.cmake 会被切分成aerotenna, ocpoc 和 ubuntu 三部分,
+# 然后通过不同的拼接组合和CONFIG 的值进行比较, 如果相等则设置 PX4_CONFIG_FILE 的值为当前的cmake 文件.
 
 if(NOT PX4_CONFIG_FILE)
 
