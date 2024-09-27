@@ -37,6 +37,10 @@
  *
  * @author Lorenz Meier <lorenz@px4.io>
  */
+// px4iofirmware 这里面主要是一些，IO口的操作和安全开关的操作。
+// 他会在编译飞控固件的时候，一起被编译成为px4io-v2.bin，
+// 放在NUTTX文件系统中，在主处理器运行的时候把这个固件烧写进入协处理器。
+// 具体的烧写到单片机的FLASH哪个位置由px4io.cpp文件设置。
 
 #include <px4_platform_common/px4_config.h>
 
