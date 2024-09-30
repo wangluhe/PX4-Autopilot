@@ -166,5 +166,9 @@ if(CONFIG_MODULES_UUV_ATT_CONTROL)
 		60000_uuv_generic
 		60001_uuv_hippocampus
 		60002_uuv_bluerov2_heavy
+		# 添加完机型文件后，还需要修改该目录下的CMakeLists.txt文件，
+		# 在文件的最后添加上自定义机型的名字
+		# [80000, 81000] (Unmanned) TEST
+		80003_testframs
 	)
 endif()

@@ -1394,6 +1394,8 @@ Mavlink::configure_streams_to_default(const char *configure_single_stream)
 	};
 
 	const float unlimited_rate = -1.0f;
+	// 配置MAVLINK发送速率，注意这里要加在switch (_mode)上面
+	configure_stream_local("TEST_MAVLINK", unlimited_rate);
 
 	switch (_mode) {
 	case MAVLINK_MODE_NORMAL:

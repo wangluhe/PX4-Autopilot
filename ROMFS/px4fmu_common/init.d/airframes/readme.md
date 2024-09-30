@@ -1,0 +1,1 @@
+PX4的机型文件存放在Firmware/ROMFS/px4fmu_common/init.d/airframes目录下，每个机型文件开头的数字代表是该机型的ID，即参数SYS_AUTOSTART，设置不同的SYS_AUTOSTART参数即可设置不同的机型，每个机型的SYS_AUTOSTART都不一样，假如自定义了一个机型文件80003_testframs，该机型文件对应的SYS_AUTOSTART即是80003。

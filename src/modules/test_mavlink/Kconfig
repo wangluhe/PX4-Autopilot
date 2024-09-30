@@ -1,0 +1,5 @@
+menuconfig MODULES_TEST_MAVLINK
+	bool "test_mavlink"
+	default n
+	---help---
+		Enable support for test_mavlink

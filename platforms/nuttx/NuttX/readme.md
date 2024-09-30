@@ -17,6 +17,19 @@ FMU和IO的启动入口不同，分别为：
 [4] nsh_initscript函数所执行的脚本即为FMU的启动脚本rcS。
 [5] rcS脚本中负责挂载Sd卡，启动uorb，加载参数配置文件，启动dataman数据管理，启动各传感器，commander，执行rc.io，执行rc.interface（混控器），执行rc.mc_app（飞控姿态与位置算法）等。
 
+__start
+ └──> nx_start
+     └──> nx_bringup
+         └──> nx_create_initthread
+             └──> nx_start_application
+                 └──> nxtask_create //CONFIG_USER_ENTRYPOINT nsh_main --> platforms\nuttx\NuttX\apps\system\nsh\nsh_main.c main
+
+main  //nsh_main
+├──> nsh_initialize // --> boardctl(BOARDIOC_INIT, 0) --> board_app_initialize
+└──> nsh_consolemain (nsh_main)
+	└──> nsh_initscript
+		└──> nsh_script(vtbl, "init", NSH_INITPATH);
+
 （2）IO中CONFIG_USER_ENTRYPOINT宏定义为user_main：
 调用src/modules/px4iofirmware/px4io.c中的user_start函数，负责IO基础环境的初始化，包括PWM，串口，ADC等，最后进入死循环，用于遥控器输入和与FMU通信的内容。
 

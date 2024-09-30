@@ -136,6 +136,9 @@ void
 MavlinkReceiver::handle_message(mavlink_message_t *msg)
 {
 	switch (msg->msgid) {
+	case MAVLINK_MSG_ID_TEST_MAVLINK:
+		handle_message_test_mavlink_rx(msg);
+		break;  //实现消息处理函数, 主要是解析mavlink消息并通过uorb发布
 	case MAVLINK_MSG_ID_COMMAND_LONG:
 		handle_message_command_long(msg);
 		break;
@@ -467,6 +470,18 @@ MavlinkReceiver::evaluate_target_ok(int command, int target_system, int target_c
 	}
 
 	return target_ok;
+}
+
+void
+MavlinkReceiver::handle_message_test_mavlink_rx(mavlink_message_t *msg)
+{
+    mavlink_test_mavlink_t mavlink_test_msg;
+    mavlink_msg_test_mavlink_decode(msg, &mavlink_test_msg);
+    test_mavlink_rx_s __test_mavlink_rx;
+    __test_mavlink_rx.test1=mavlink_test_msg.test1;
+    __test_mavlink_rx.test2=mavlink_test_msg.test2;
+    __test_mavlink_rx.test3=mavlink_test_msg.test3;
+    _test_mavlink_rx_pub.publish(__test_mavlink_rx);
 }
 
 void
