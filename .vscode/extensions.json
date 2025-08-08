@@ -19,6 +19,7 @@
         "uavcan.dsdl",
         "wholroyd.jinja",
         "zixuanwang.linkerscript",
-        "ms-vscode.makefile-tools"
+        "ms-vscode.makefile-tools",
+        "intellsmi.comment-translate"
     ]
 }

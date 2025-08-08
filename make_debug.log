@@ -1,0 +1,73 @@
+GNU Make 4.3
+为 x86_64-pc-linux-gnu 编译
+Copyright (C) 1988-2020 Free Software Foundation, Inc.
+许可证：GPLv3+：GNU 通用公共许可证第 3 版或更新版本<http://gnu.org/licenses/gpl.html>。
+本软件是自由软件：您可以自由修改和重新发布它。
+在法律允许的范围内没有其他保证。
+正在读入 makefiles...
+正在读入 makefile “Makefile”...
+正在更新 makefile....
+ 正在考虑目标文件“Makefile”。
+  正在为“Makefile”寻找隐含规则。
+  用主干“Makefile”尝试匹配模式规则。
+  找到一条关于“Makefile”的隐含规则。
+  目标文件“Makefile”的前提已完成。
+ 不需要重新制作目标“Makefile”.
+更新目标....
+正在考虑目标文件“holybro_kakuteh7_default”。
+ 文件“holybro_kakuteh7_default”不存在。
+ 目标文件“holybro_kakuteh7_default”的前提已完成。
+必须重新制作目标“holybro_kakuteh7_default”。
+将子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32496 放入链。
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32496 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32496 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32498 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32498 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32499 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32499 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32500 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32500 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32501 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32501 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32502 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32502 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32503 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32503 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32504 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32504 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32505 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32505 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32506 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32506 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32507 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32507 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32508 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32508 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32509 
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32509 
+活跃子进程 0x64bdaf19a7b0 (holybro_kakuteh7_default) PID 32510 
+[1/11] Performing build step for 'libmicroxrceddsclient_project'
+[2/11] Performing install step for 'libmicroxrceddsclient_project'
+[3/11] Completed 'libmicroxrceddsclient_project'
+[4/11] Building C object platforms/nuttx/CMakeFiles/px4.dir/__/common/empty.c.obj
+[5/11] Building CXX object src/modules/uxrce_dds_client/CMakeFiles/modules__uxrce_dds_client.dir/srv_base.cpp.obj
+[6/11] Building CXX object src/modules/uxrce_dds_client/CMakeFiles/modules__uxrce_dds_client.dir/vehicle_command_srv.cpp.obj
+[7/11] Building CXX object src/modules/uxrce_dds_client/CMakeFiles/modules__uxrce_dds_client.dir/uxrce_dds_client.cpp.obj
+[8/11] Linking CXX static library src/modules/uxrce_dds_client/libmodules__uxrce_dds_client.a
+[9/11] Linking CXX executable holybro_kakuteh7_default.elf
+Memory region         Used Size  Region Size  %age Used
+        ITCM_RAM:           0 B        64 KB      0.00%
+           FLASH:     1704884 B      1792 KB     92.91%
+       DTCM1_RAM:           0 B        64 KB      0.00%
+       DTCM2_RAM:           0 B        64 KB      0.00%
+        AXI_SRAM:       39688 B       512 KB      7.57%
+           SRAM1:           0 B       128 KB      0.00%
+           SRAM2:           0 B       128 KB      0.00%
+           SRAM3:           0 B        32 KB      0.00%
+           SRAM4:           0 B        64 KB      0.00%
+          BKPRAM:           0 B         4 KB      0.00%
+[10/11] Generating ../../holybro_kakuteh7_default.bin
+[11/11] Creating /home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default/holybro_kakuteh7_default.px4
+正在中止获胜的子进程 0x64bdaf19a7b0 PID 32510 
+从链中删除子进程 0x64bdaf19a7b0 PID 32510。
+重新制作目标文件“holybro_kakuteh7_default”成功。

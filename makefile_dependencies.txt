@@ -1,0 +1,41 @@
+GNU Make 4.3
+为 x86_64-pc-linux-gnu 编译
+Copyright (C) 1988-2020 Free Software Foundation, Inc.
+许可证：GPLv3+：GNU 通用公共许可证第 3 版或更新版本<http://gnu.org/licenses/gpl.html>。
+本软件是自由软件：您可以自由修改和重新发布它。
+在法律允许的范围内没有其他保证。
+正在读入 makefiles...
+正在读入 makefile “Makefile”...
+正在更新 makefile....
+ 正在考虑目标文件“Makefile”。
+  正在为“Makefile”寻找隐含规则。
+  用主干“Makefile”尝试匹配模式规则。
+  找到一条关于“Makefile”的隐含规则。
+  目标文件“Makefile”的前提已完成。
+ 由于 always-make 标志所以制作“Makefile”。
+ 必须重新制作目标“Makefile”。
+将子进程 0x64a86eb74650 (Makefile) PID 26107 放入链。
+活跃子进程 0x64a86eb74650 (Makefile) PID 26107 
+正在中止获胜的子进程 0x64a86eb74650 PID 26107 
+从链中删除子进程 0x64a86eb74650 PID 26107。
+ 重新制作目标文件“Makefile”成功。
+更新目标....
+正在考虑目标文件“holybro_kakuteh7_default”。
+ 文件“holybro_kakuteh7_default”不存在。
+ 目标文件“holybro_kakuteh7_default”的前提已完成。
+必须重新制作目标“holybro_kakuteh7_default”。
+# check if the desired cmake configuration matches the cache then CMAKE_CACHE_CHECK stays empty
+# change to build folder which fails if it doesn't exist and CACHED_CMAKE_OPTIONS stays empty
+# fetch all previously configured and cached options from the build folder and transform them into the OPTION=VALUE format without type (e.g. :BOOL)
+# transform the options in CMAKE_ARGS into the OPTION=VALUE format without -D
+# find each currently desired option in the already cached ones making sure the complete configured string value is the same
+# if the complete list of desired options is found in the list of verified options we don't need to reconfigure and CMAKE_CACHE_CHECK stays empty
+# make sure to start from scratch when switching from GNU Make to Ninja
+if [ Ninja = "Ninja" ] && [ -e "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default"/Makefile ]; then rm -rf "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default"; fi
+# make sure to start from scratch if ninja build file is missing
+if [ Ninja = "Ninja" ] && [ ! -f "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default"/build.ninja ]; then rm -rf "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default"; fi
+# only excplicitly configure the first build, if cache file already exists the makefile will rerun cmake automatically if necessary
+if [ ! -e "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default"/CMakeCache.txt ] || [  ]; then mkdir -p "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default" && cd "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default" && cmake "/home/www/px4_wlh/px4_release_1.15_stable" -G"Ninja" -DCONFIG=holybro_kakuteh7_default || (rm -rf "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default"); fi
+# run the build for the specified target
+cmake --build "/home/www/px4_wlh/px4_release_1.15_stable/build/holybro_kakuteh7_default" --  
+重新制作目标文件“holybro_kakuteh7_default”成功。
