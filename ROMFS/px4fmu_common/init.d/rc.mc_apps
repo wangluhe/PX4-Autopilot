@@ -25,6 +25,11 @@ then
 	mc_autotune_attitude_control start
 fi
 
+# Start image guidance module
+if param get MODULES_IMAGE_GUIDANCE 1 > /dev/null && ! pgrep -x image_guidance > /dev/null; then
+	image_guidance start
+fi
+
 #
 # Start Multicopter Position Controller.
 #
