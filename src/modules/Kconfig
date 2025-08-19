@@ -1,1 +1,11 @@
 rsource "*/Kconfig"
+
+config MODULES_IMAGE_GUIDANCE
+	bool "Image Guidance Module"
+	depends on BOARD_PROTECTED
+
+if MODULES_IMAGE_GUIDANCE
+	source "image_guidance/Kconfig"
+endif
+
+endmenu
