@@ -1,0 +1,27 @@
+menuconfig MODULES_IMAGE_GUIDANCE
+    bool "Image Guidance"
+    default n
+    ---help---
+        Enable support for image-based guidance module
+
+if MODULES_IMAGE_GUIDANCE
+
+config IMAGE_GUIDANCE_UART
+    string "UART Device Path"
+    default "/dev/ttyS2"
+    ---help---
+        UART device path for communication with camera pod
+
+config IMAGE_GUIDANCE_BAUDRATE
+    int "UART Baudrate"
+    default 115200
+    ---help---
+        Baudrate for UART communication
+
+config IMAGE_GUIDANCE_CONTROL_GAIN
+    float "Control Proportional Gain"
+    default 0.001
+    ---help---
+        Proportional gain for offset control
+
+endif
