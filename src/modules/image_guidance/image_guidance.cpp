@@ -259,6 +259,11 @@ extern "C" __EXPORT int image_guidance_main(int argc, char *argv[])
     }
 
     // Run module loop at 50Hz
+//     while (!guidance.is_running()) {  // 替换为 guidance.should_exit()
+//         guidance.run();
+//         px4_usleep(20000); // 50Hz
+//     }
+
     while (!guidance.should_exit()) {  // 替换为 guidance.should_exit()
         guidance.run();
         px4_usleep(20000); // 50Hz
