@@ -36,7 +36,7 @@ struct PodFeedbackFrame {
     uint8_t tf_usage;         // TF卡使用百分比
     uint8_t tf_capacity;      // TF卡总容量
     uint16_t ir_focal_length; // 红外焦距
-    uint16_t vis_focal_length;// 可见光焦距
+    uint16_t vis_focal_length; // 可见光焦距
     uint16_t target_ids;      // 目标识别编号
     float target_lon;         // 目标经度
     float target_lat;         // 目标纬度
@@ -61,12 +61,46 @@ struct PodFeedbackFrame {
 class ImageGuidance : public device::Device
 {
 public:
-    ImageGuidance();
-    ~ImageGuidance() override;
+/**
+ * @brief 构造函数，初始化图像引导模块。
+ * @details 用于创建图像引导模块的实例，通常用于无人机或其他自主系统的视觉导航。
+ */
+	ImageGuidance();
+/**
+ * @brief 析构函数，用于释放 ImageGuidance 类实例占用的资源。
+ * @override 表示此函数重写了基类的析构函数。
+ */
+	~ImageGuidance() override;
 
+/**
+ * @brief 初始化函数，用于执行组件的初始化操作。
+ * @return 返回初始化结果，0表示成功，非0表示失败。
+ * @override 表示此函数重写了基类的初始化函数。
+ * @details 初始化函数用于执行组件的初始化操作，包括打开串口、读取串口数据、解析帧数据、计算控制量等。
+ */
     int init() override;
-    void run() override;
-    void print_status() override;
+/**
+ * @brief 执行主运行逻辑。
+ * @details 此函数负责启动并运行程序的核心功能，通常用于主循环或任务调度。
+ */
+    void run();
+/**
+ * @brief 打印当前状态信息。
+ * @details 该函数用于输出对象的当前状态信息，通常用于调试或日志记录。
+ * @note 这是一个虚函数，子类可以重写以实现自定义的状态打印逻辑。
+ */
+    void print_status();
+
+// init()
+// 初始化设备，包括打开串口和设置性能计数器。
+// run()
+// 主循环函数，负责读取串口数据、解析数据帧、计算控制指令并发布。
+// parse_frame(uint8_t data)
+// 解析从串口接收的数据帧，填充到 PodFeedbackFrame 结构体中。
+// calculate_control()
+// 根据解析的数据计算控制指令（如脱靶量）。
+// publish_control_setpoint()
+// 发布控制指令到系统中（通过 uORB 通信机制）。
 
 private:
     int open_serial_port();
@@ -89,3 +123,12 @@ private:
     uORB::Publication<manual_control_setpoint_s> _manual_control_pub{ORB_ID(manual_control_setpoint)};
     manual_control_setpoint_s _control_setpoint{};
 };
+// _feedback_frame
+// 存储解析后的数据帧。
+// _tracking_active
+// 标志位，表示是否正在跟踪目标。
+// _azimuth_offset 和 _pitch_offset
+// 存储方位和俯仰的脱靶量（像素单位）。
+// _manual_control_pub
+// 用于发布控制指令的 uORB 发布者。
+// 使用 _uart_fd 存储串口文件描述符， _rx_buf 存储接收到的数据。
