@@ -4,6 +4,7 @@
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/time.h>
 #include <px4_platform_common/posix.h>
+#include <px4_platform_common/module.h>
 #include <drivers/device/device.h>
 #include <lib/perf/perf_counter.h>
 #include <uORB/Publication.hpp>
@@ -58,7 +59,7 @@ struct PodFeedbackFrame {
 };
 #pragma pack(pop)
 
-class ImageGuidance : public device::Device
+class ImageGuidance : public ModuleBase<ImageGuidance>, public device::Device
 {
 public:
 /**
@@ -83,13 +84,15 @@ public:
  * @brief 执行主运行逻辑。
  * @details 此函数负责启动并运行程序的核心功能，通常用于主循环或任务调度。
  */
-    void run();
+    void run() override;
 /**
  * @brief 打印当前状态信息。
  * @details 该函数用于输出对象的当前状态信息，通常用于调试或日志记录。
  * @note 这是一个虚函数，子类可以重写以实现自定义的状态打印逻辑。
  */
-    void print_status();
+    int print_status() override;
+    bool should_exit() const;
+
 
 // init()
 // 初始化设备，包括打开串口和设置性能计数器。
