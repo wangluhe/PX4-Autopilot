@@ -18,10 +18,4 @@ config IMAGE_GUIDANCE_BAUDRATE
     ---help---
         Baudrate for UART communication
 
-config IMAGE_GUIDANCE_CONTROL_GAIN
-    float "Control Proportional Gain"
-    default 0.001
-    ---help---
-        Proportional gain for offset control
-
 endif
