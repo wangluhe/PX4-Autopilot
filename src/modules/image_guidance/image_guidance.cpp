@@ -5,8 +5,18 @@
 #include <termios.h>
 #include <unistd.h>
 
+/**
+ * @brief 构造函数，初始化 ImageGuidance 设备。
+ * @details 继承自 Device 类，使用指定的设备路径 DEVICE_PATH 进行初始化。
+ */
 ImageGuidance::ImageGuidance() : Device(nullptr, DEVICE_PATH) {}
 
+/**
+ * @brief 析构函数，释放资源并清理对象。
+ *
+ * 关闭已打开的串口文件描述符（如果有效），并释放性能计数器资源。
+ * 确保对象销毁时不会遗留资源泄漏。
+ */
 ImageGuidance::~ImageGuidance()
 {
     if (_uart_fd >= 0) {
@@ -17,13 +27,25 @@ ImageGuidance::~ImageGuidance()
     perf_free(_serial_errors);
 }
 
+/**
+ * @brief 初始化图像引导模块。
+ *
+ * 此函数负责初始化图像引导模块，包括打开串口端口和初始化控制设定点结构。
+ * 如果串口初始化失败，函数会返回错误码并记录错误日志。
+ *
+ * @return 返回执行状态：
+ *         - PX4_OK 表示初始化成功。
+ *         - 其他错误码表示初始化失败。
+ */
 int ImageGuidance::init()
 {
-    int ret = open_serial_port();
-    if (ret != PX4_OK) {
-        PX4_ERR("Failed to initialize UART");
-        return ret;
-    }
+	int ret = open_serial_port();
+	if (ret != PX4_OK) {
+		PX4_ERR("Failed to initialize UART");
+		perf_free(_loop_perf);
+		perf_free(_serial_errors);
+		return ret;
+	}
 
     // Initialize control setpoint structure
     memset(&_control_setpoint, 0, sizeof(_control_setpoint));
@@ -65,7 +87,6 @@ int ImageGuidance::open_serial_port()
         close(_uart_fd);
         return -errno;
     }
-
     return PX4_OK;
 }
 
