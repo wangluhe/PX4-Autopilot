@@ -4,12 +4,19 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <mathlib/mathlib.h>           // 另一个可能的位置
+#include <lib/geo/geo.h>
+#include <px4_platform_common/module.h>
+#include <px4_platform_common/tasks.h>
+
 
 /**
  * @brief 构造函数，初始化 ImageGuidance 设备。
  * @details 继承自 Device 类，使用指定的设备路径 DEVICE_PATH 进行初始化。
  */
-ImageGuidance::ImageGuidance() : Device(nullptr, DEVICE_PATH) {}
+ImageGuidance::ImageGuidance() : Device("image_guidance") {
+    // 串口路径在init()中通过IMAGE_GUIDANCE_UART_PATH处理
+}
 
 /**
  * @brief 析构函数，释放资源并清理对象。
@@ -207,12 +214,12 @@ void ImageGuidance::calculate_control()
     const float Kp_pitch = 0.001f;
 
     // Convert pixel offsets to control inputs (normalized to [-1, 1])
-    _control_setpoint.x = constrain_float(_azimuth_offset * Kp_azimuth, -1.0f, 1.0f);
-    _control_setpoint.y = constrain_float(_pitch_offset * Kp_pitch, -1.0f, 1.0f);
+    _control_setpoint.roll = math::constrain(_azimuth_offset * Kp_azimuth, -1.0f, 1.0f);
+    _control_setpoint.pitch = math::constrain(_pitch_offset * Kp_pitch, -1.0f, 1.0f);
 
     // Keep altitude and yaw unchanged
-    _control_setpoint.z = NAN;
-    _control_setpoint.r = NAN;
+    _control_setpoint.throttle = NAN;
+    _control_setpoint.yaw= NAN;
 
     _control_setpoint.timestamp = hrt_absolute_time();
 }
@@ -223,7 +230,7 @@ void ImageGuidance::publish_control_setpoint()
     _manual_control_pub.publish(_control_setpoint);
 }
 
-void ImageGuidance::print_status()
+int ImageGuidance::print_status()
 {
     PX4_INFO("Image Guidance Module Status:");
     PX4_INFO("UART FD: %d", _uart_fd);
@@ -231,7 +238,13 @@ void ImageGuidance::print_status()
     PX4_INFO("Azimuth Offset: %d, Pitch Offset: %d", _azimuth_offset, _pitch_offset);
     perf_print_counter(_loop_perf);
     perf_print_counter(_serial_errors);
+    return 0;
 }
+
+bool ImageGuidance::should_exit() const {
+    return ModuleBase<ImageGuidance>::should_exit();
+}
+
 
 // Module initialization function
 extern "C" __EXPORT int image_guidance_main(int argc, char *argv[])
@@ -246,7 +259,7 @@ extern "C" __EXPORT int image_guidance_main(int argc, char *argv[])
     }
 
     // Run module loop at 50Hz
-    while (!px4_should_exit()) {
+    while (!guidance.should_exit()) {  // 替换为 guidance.should_exit()
         guidance.run();
         px4_usleep(20000); // 50Hz
     }
