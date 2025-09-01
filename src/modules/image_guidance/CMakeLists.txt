@@ -1,3 +1,5 @@
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
 px4_add_module(
 	MODULE modules__image_guidance
 	MAIN image_guidance
@@ -15,4 +17,7 @@ px4_add_module(
 # Generate uORB topic headers
 # add_dependencies(modules__image_guidance uorb_messages)
 add_dependencies(modules__image_guidance uorb_msgs)
-# add_dependencies(${MODULE_NAME} uorb_messages)
+
+if(BUILD_TESTING)
+	add_subdirectory(test)
+endif()
