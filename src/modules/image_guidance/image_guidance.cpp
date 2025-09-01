@@ -118,7 +118,12 @@ int ImageGuidance::read_serial_data()
     ssize_t n = read(_uart_fd, buf, sizeof(buf));
 
     if (n < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+	#if EAGAIN == EWOULDBLOCK
+	if (errno != EAGAIN) {
+	#else
+	if (errno != EAGAIN && errno != EWOULDBLOCK) {
+	#endif
+        // if (errno != EAGAIN && errno != EWOULDBLOCK) {
             perf_count(_serial_errors);
             PX4_ERR("UART read error: %d", errno);
         }
