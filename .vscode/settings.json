@@ -129,5 +129,8 @@
                 "${workspaceFolder}/validation/module_schema.yaml": "${workspaceFolder}/src/modules/*/module.yaml"
         },
         "ros.distro": "humble",
-        "commentTranslate.source": "Bing"
+        "commentTranslate.source": "Bing",
+        "[cpp]": {
+                "editor.defaultFormatter": "ms-vscode.cpptools"
+        }
 }
