@@ -49,7 +49,7 @@ int ImageGuidance::open_serial_port()
 {
 	PX4_INFO("IMAGE_GUIDANCE_UART_PATH: %s", IMAGE_GUIDANCE_UART_PATH);
 	PX4_INFO("this is open_serial_port");
-	_uart_fd = open(IMAGE_GUIDANCE_UART_PATH, O_RDWR | O_NOCTTY | O_NONBLOCK);
+	_uart_fd = open(IMAGE_GUIDANCE_UART_PATH, O_RDWR | O_NOCTTY);
 	PX4_INFO("_uart_fd: %d", _uart_fd);
 	if (_uart_fd < 0) {
         PX4_ERR("Failed to open UART: %s (errno: %d)", IMAGE_GUIDANCE_UART_PATH, errno);
@@ -88,6 +88,8 @@ int ImageGuidance::open_serial_port()
 		return -errno;
 	}
 
+	// 新增：刷新串口输入输出缓冲区
+	tcflush(_uart_fd, TCIOFLUSH);
 
 	// 新增：验证串口配置是否生效
 	struct termios new_config;
@@ -106,7 +108,7 @@ int ImageGuidance::open_serial_port()
 	}
 
 
-    	PX4_INFO("_uart_fd: %d", _uart_fd);
+	PX4_INFO("_uart_fd: %d", _uart_fd);
 
 	// 打印波特率宏定义值（用于调试）
 	PX4_INFO("BAUDRATE宏值: 0x%x (%d)", BAUDRATE, BAUDRATE);
@@ -133,6 +135,7 @@ void ImageGuidance::run()
 	}
 	PX4_INFO("_uart_fd: %d", _uart_fd);
 
+	PX4_INFO("this is run");
 	int ret = read_serial_data();
 
 	// 检查返回值，如果出错则退出
@@ -153,6 +156,10 @@ void ImageGuidance::run()
 
 int ImageGuidance::read_serial_data()
 {
+	PX4_INFO("this is read_serial_data");
+	static int call_counter = 0; // 初始化静态计数器
+	call_counter++; // 每次调用递增计数器
+	PX4_INFO("read_serial_data,this is call_counter: %d", call_counter);
 	// 新增：检查文件描述符有效性
 	if (_uart_fd < 0) {
 		return -1;
@@ -160,6 +167,12 @@ int ImageGuidance::read_serial_data()
 
 	uint8_t buf[128];
 	ssize_t n = read(_uart_fd, buf, sizeof(buf));
+	if (n < 0) {
+		PX4_INFO("read_serial_data,this is nnnnn");
+		PX4_ERR("UART read failed (errno: %d - %s)", errno, strerror(errno));
+		return -errno;
+	}
+	int saved_errno = errno; // 立即保存错误码
 	PX4_INFO("read_serial_data");
 	PX4_INFO("n: %zd", n);
 
@@ -174,26 +187,26 @@ int ImageGuidance::read_serial_data()
 	} else if (n == 0) {
 		PX4_INFO("buf: (empty)");
 	} else {
-		PX4_INFO("read error: %d (%s)", errno, strerror(errno));
+		PX4_INFO("read error: %d (%s)", saved_errno, strerror(saved_errno));
 	}
 
-	PX4_DEBUG("UART received %zd bytes", n); // 使用DEBUG级别避免正常运行时刷屏
+	PX4_DEBUG("UART received %zd bytes", n);
 
 	if (n < 0) {
-		if (errno == EINVAL) {
+		if (saved_errno == EINVAL) {
 			PX4_ERR("UART read error: Invalid argument (EINVAL). Check UART configuration.");
-			request_stop(); // 直接退出模块
-			return -errno;
+			request_stop();
+			return -saved_errno;
 		}
 		#if EAGAIN == EWOULDBLOCK
-		if (errno != EAGAIN) {
+		if (saved_errno != EAGAIN) {
 		#else
-		if (errno != EAGAIN && errno != EWOULDBLOCK) {
+		if (saved_errno != EAGAIN && saved_errno != EWOULDBLOCK) {
 		#endif
 		perf_count(_serial_errors);
-		PX4_ERR("UART read error: %d", errno);
+		PX4_ERR("UART read error: %d", saved_errno);
 		}
-		return -errno;
+		return -saved_errno;
 	}
 
 	for (ssize_t i = 0; i < n; i++) {
