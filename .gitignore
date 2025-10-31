@@ -108,3 +108,5 @@ src/systemcmds/topic_listener/listener_generated.cpp
 
 # colcon
 log/
+attack_vision.md
+px4-venv-6xrt/
