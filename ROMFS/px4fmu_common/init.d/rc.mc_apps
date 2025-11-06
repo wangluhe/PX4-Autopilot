@@ -38,7 +38,7 @@ mc_pos_control start
 land_detector start multicopter
 
 # Attack Vision autostart (image terminal guidance)
-if param greater -s AV_EN 0
+if param greater -s AAATTKVIS_EN 0
 then
     attack_vision start
 fi
