@@ -1,0 +1,550 @@
+/**
+ * @file attack_vision.cpp
+ * @brief 图像末制导模块实现文件
+ *
+ * 功能说明：
+ * 1. 通过串口接收吊舱64字节反馈帧（每40ms一次）
+ * 2. 解析帧数据：锁定状态（第5-6字节Bit9~Bit10）和目标脱靶量（第59-62字节）
+ * 3. 当锁定有效且数据新鲜时，切换到Offboard模式并发布速度控制指令
+ * 4. 失锁或超时（200ms无数据）时，自动切换回悬停模式
+ *
+ * 安全机制：
+ * - 帧校验（帧头、帧尾、异或校验）
+ * - 超时保护（200ms无数据视为失效）
+ * - 速度死区和限幅保护
+ * - 参数开关控制（AV_EN）
+ */
+
+#include "attack_vision_test.hpp"
+
+#include <px4_platform_common/getopt.h>
+#include <px4_platform_common/log.h>
+#include <drivers/drv_hrt.h>
+#include <lib/mathlib/math/Limits.hpp>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <px4_platform_common/cli.h>
+
+/**
+ * @brief 构造函数
+ * 初始化模块参数和工作队列
+ */
+AttackVision::AttackVision()
+	: ModuleParams(nullptr)
+	, WorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
+{
+}
+
+AttackVision::~AttackVision()
+{
+	if (_fd >= 0) {
+		::close(_fd);
+		_fd = -1;
+	}
+}
+
+int AttackVision::task_spawn(int argc, char *argv[])
+{
+	AttackVision *instance = new AttackVision();
+	if (instance) {
+		_object.store(instance);
+		_task_id = task_id_is_work_queue;
+		instance->ScheduleNow();
+		return PX4_OK;
+	}
+	PX4_ERR("alloc failed");
+	return PX4_ERROR;
+}
+
+AttackVision *AttackVision::instantiate(int argc, char *argv[])
+{
+	return new AttackVision();
+}
+
+int AttackVision::custom_command(int argc, char *argv[])
+{
+	return print_usage("unknown command");
+}
+
+int AttackVision::print_usage(const char *reason)
+{
+	if (reason) {
+		PX4_WARN("%s\n", reason);
+	}
+
+	PRINT_MODULE_DESCRIPTION(
+		R"DESCR_STR(
+		### Description
+
+		图像末制导模块，通过串口接收吊舱反馈数据，实现基于图像的目标跟踪和制导功能。
+
+		### 功能特性
+
+		- 通过TELEM2串口接收吊舱64字节反馈帧（每40ms一次）
+		- 解析锁定状态和目标脱靶量（像素偏差）
+		- 锁定有效时自动切换到Offboard模式并发布速度控制指令
+		- 失锁或超时时自动切换回悬停模式（安全保护）
+
+		### 硬件连接
+
+		吊舱串口连接到飞控TELEM2口（/dev/ttyS2）
+
+		### 参数
+
+		- AAATTKVIS_EN: 模块使能开关（0=禁用，1=启用）
+		- AV_BAUD: 串口波特率（默认115200）
+		- AV_KP: 速度控制增益（m/s每像素，默认0.001）
+		- AV_DEAD: 像素死区阈值（默认5像素）
+		- AV_MAX_V: 最大速度限制（m/s，默认1.0）
+
+		)DESCR_STR");
+
+	PRINT_MODULE_USAGE_NAME("attack_vision", "system");
+	PRINT_MODULE_USAGE_COMMAND("start");
+	PRINT_MODULE_USAGE_COMMAND("stop");
+	PRINT_MODULE_USAGE_COMMAND("status");
+	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
+
+	return 0;
+}
+
+int AttackVision::print_status()
+{
+	uint64_t now_us = hrt_absolute_time();
+	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
+
+	PX4_INFO("attack_vision running, fd=%d, lock=%d, pix=(%d,%d)",
+		_fd, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+	PX4_INFO("  buf_len=%d, last_frame_age=%.3f ms",
+		_buf_len, (double)(time_since_last_frame) / 1000.0);
+
+	// 如果长时间没有收到帧，输出警告
+	if (time_since_last_frame > 500000) {  // 500ms
+		PX4_WARN("  No frame received for %.3f ms - check data source", (double)(time_since_last_frame) / 1000.0);
+	}
+
+	return 0;
+}
+
+/**
+ * @brief 配置串口参数
+ * @param baudrate 波特率（9600, 19200, 38400, 57600, 115200）
+ * @return true=成功，false=失败
+ */
+bool AttackVision::configure_uart(int baudrate)
+{
+	if (_fd < 0) { return false; }
+
+	termios t{};
+	if (tcgetattr(_fd, &t) != 0) {
+		PX4_ERR("tcgetattr failed");
+		return false;
+	}
+	cfmakeraw(&t);  // 设置为原始模式（无行缓冲、无回显等）
+	t.c_cflag |= CLOCAL | CREAD;  // 本地连接，启用接收器
+
+	// 根据参数设置波特率
+	speed_t speed = B115200;
+	if (baudrate == 9600) speed = B9600;
+	else if (baudrate == 19200) speed = B19200;
+	else if (baudrate == 38400) speed = B38400;
+	else if (baudrate == 57600) speed = B57600;
+	else if (baudrate == 115200) speed = B115200;
+
+	cfsetispeed(&t, speed);
+	cfsetospeed(&t, speed);
+	if (tcsetattr(_fd, TCSANOW, &t) != 0) {
+		PX4_ERR("tcsetattr failed");
+		return false;
+	}
+	return true;
+}
+
+
+bool AttackVision::open_uart()
+{
+	#ifdef __PX4_POSIX
+	// SITL/Posix 下使用虚拟串口设备
+	const char *dev = "/tmp/attack_vision_tty";
+
+	PX4_INFO("尝试打开虚拟串口: %s", dev);
+
+	// 先检查设备是否存在
+	if (access(dev, F_OK) != 0) {
+		PX4_ERR("虚拟串口设备不存在: %s", dev);
+		return false;
+	}
+
+	// 以读写模式打开虚拟串口设备
+	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+	if (_fd < 0) {
+		PX4_ERR("open %s failed: %s", dev, strerror(errno));
+		return false;
+	}
+	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
+
+	// 配置串口参数
+	bool ret = configure_uart(_param_av_baud.get());
+	if (ret) {
+		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
+	} else {
+		PX4_ERR("Failed to configure virtual UART");
+	}
+	return ret;
+	#else
+	// 硬件板卡默认 TELEM2 口
+	const char *dev = "/dev/ttyS5";
+	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+	if (_fd < 0) {
+		PX4_ERR("open %s failed", dev);
+		return false;
+	}
+	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
+	bool ret = configure_uart(_param_av_baud.get());
+	if (ret) {
+		PX4_INFO("UART configured: baud=%d", _param_av_baud.get());
+	}
+	return ret;
+	#endif
+}
+
+
+/**
+ * @brief 校验帧格式
+ * @param frame 64字节帧数据指针
+ * @return true=校验通过，false=校验失败
+ *
+ * 校验内容：
+ * 1. 帧头：第0字节=0xFC，第1字节=0x2C
+ * 2. 帧尾：第63字节=0xF0
+ * 3. 异或校验：第3~62字节异或结果应等于第63字节（实际是第62字节）
+ */
+bool AttackVision::validate_frame(const uint8_t *frame)
+{
+	if (!frame) return false;
+	if (frame[0] != FRAME_HEAD_0 || frame[1] != FRAME_HEAD_1) return false;
+	if (frame[63] != FRAME_TAIL) return false;
+
+	// 异或校验：第3~62字节（索引2~61）异或，结果应等于第63字节（索引62）
+	uint8_t xorv = 0;
+	for (int i = 2; i <= 61; i++) { xorv ^= frame[i]; }
+	return xorv == frame[62];
+}
+
+/**
+ * @brief 尝试从串口读取一帧数据
+ * @return true=成功读取并解析一帧，false=未完成或失败
+ */
+/**
+ * @brief 尝试从串口读取一帧数据
+ * @return true=成功读取并解析一帧，false=未完成或失败
+ */
+bool AttackVision::try_read_frame()
+{
+	if (_fd < 0) {
+		return false;
+	}
+
+	// 一次性读取所有可用数据，而不是逐字节读取
+	uint8_t read_buf[256];
+	ssize_t n = ::read(_fd, read_buf, sizeof(read_buf));
+
+	if (n <= 0) {
+		if (n < 0 && errno != EAGAIN) {
+		PX4_ERR("读取错误: %s", strerror(errno));
+		}
+		return false;
+	}
+
+	// 调试信息：显示读取到的字节数
+	static int read_count = 0;
+	if (read_count < 5) {
+		// PX4_INFO("成功读取 %zd 字节", n);  // 使用 %zd 适用于 ssize_t
+		read_count++;
+	}
+
+	// 处理所有读取到的字节
+	for (ssize_t i = 0; i < n; i++) {
+		uint8_t byte = read_buf[i];
+
+		// 调试信息：显示前几个字节的内容
+		if (read_count < 10 && i < 5) {
+		//     PX4_INFO("字节[%zd]: 0x%02X", i, byte);  // 使用 %zd 适用于 ssize_t
+		}
+
+		_buf[_buf_len++] = byte;
+
+		// 检查是否收集到完整帧
+		if (_buf_len >= FRAME_LEN) {
+		// 校验帧格式
+		bool ok = validate_frame(_buf);
+		if (ok) {
+			_last_frame_time_us = hrt_absolute_time();
+
+			// 解析帧数据
+			parse_frame_data();
+
+			_buf_len = 0;  // 重置缓冲区
+
+			// 调试信息
+			static int success_count = 0;
+			if (success_count < 3) {
+			PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
+				(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+			success_count++;
+			}
+			return true;
+		} else {
+			// 校验失败，滑动窗口
+			memmove(_buf, _buf + 1, FRAME_LEN - 1);
+			_buf_len = FRAME_LEN - 1;
+
+			static int fail_count = 0;
+			if (fail_count < 3) {
+			PX4_WARN("帧校验失败，滑动窗口");
+			fail_count++;
+			}
+		}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * @brief 解析帧数据
+ */
+void AttackVision::parse_frame_data()
+{
+	// ========== 解析关键字段 ==========
+	// 第5-6字节：吊舱状态（UINT16，小端序）
+	uint16_t status_5_6 = (uint16_t)_buf[4] | ((uint16_t)_buf[5] << 8);
+	// 第9字节：伺服状态
+	uint8_t servo_state = _buf[8];
+
+	// 锁定状态判断：Bit9~Bit10（第5-6字节的状态字）
+	uint16_t lock_bits = (status_5_6 >> 9) & 0x3;
+	bool locking = (lock_bits == 0x1) || (lock_bits == 0x2);  // 01或10表示锁定
+	bool exit_lock = (lock_bits == 0x3);  // 11表示退出锁定
+
+	// 锁定有效条件：锁定标识有效 AND 伺服状态为跟踪模式（0x07）
+	_lock_active = locking && (servo_state == 0x07);
+	if (exit_lock) { _lock_active = false; }  // 退出锁定标志优先级更高
+
+	// 第59-60字节：目标脱靶量-方位方向（INT16，小端序，单位：像素）
+	_pix_offset_x = (int16_t)((uint16_t)_buf[58] | ((uint16_t)_buf[59] << 8));
+	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
+	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
+}
+
+
+
+/**
+ * @brief 切换到Offboard模式
+ * @return true=已在Offboard模式且已解锁，false=正在切换中或未解锁
+ *
+ * 注意：需要飞控已解锁且允许Offboard模式（通过地面站参数设置）
+ */
+bool AttackVision::switch_to_offboard()
+{
+	vehicle_status_s vs{};
+	if (_vehicle_status_sub.copy(&vs)) {
+		// 检查是否已在Offboard模式且已解锁
+		if (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD &&
+			vs.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+			return true;
+		}
+	}
+
+	// 发送模式切换命令
+	vehicle_command_s cmd{};
+	cmd.timestamp = hrt_absolute_time();
+	cmd.param1 = 1;  // custom mode
+	cmd.param2 = 6;  // main mode: OFFBOARD (MAV_MODE_FLAG_CUSTOM_MODE_ENABLED | MAV_MODE_FLAG_SAFETY_ARMED)
+	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
+	cmd.target_system = 1;
+	cmd.target_component = 1;
+	_vehicle_cmd_pub.publish(cmd);
+	return false;  // 切换中，下次循环再检查
+}
+
+/**
+ * @brief 切换到悬停模式（Auto Loiter）
+ *
+ * 当失锁或超时时，自动切换回悬停模式，确保飞行安全
+ */
+void AttackVision::switch_to_hold()
+{
+	vehicle_command_s cmd{};
+	cmd.timestamp = hrt_absolute_time();
+	cmd.param1 = 1;  // custom mode
+	cmd.param2 = 4;  // main mode: AUTO (4)
+	cmd.param3 = 3;  // submode: LOITER (3)
+	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
+	cmd.target_system = 1;
+	cmd.target_component = 1;
+	_vehicle_cmd_pub.publish(cmd);
+}
+
+/**
+ * @brief 发布Offboard速度控制指令
+ * @param vx 前向速度（m/s，机体系）
+ * @param vy 横向速度（m/s，机体系）
+ * @param vz 垂直速度（m/s，向上为正）
+ * @param yaw_rate 偏航角速度（rad/s）
+ *
+ * 需要同时发布offboard_control_mode和trajectory_setpoint两个话题
+ */
+void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate)
+{
+	// 发布Offboard控制模式：仅使用速度控制
+	offboard_control_mode_s ocm{};
+	ocm.timestamp = hrt_absolute_time();
+	ocm.position = false;
+	ocm.velocity = true;  // 启用速度控制
+	ocm.acceleration = false;
+	ocm.attitude = false;
+	ocm.body_rate = false;
+	ocm.thrust_and_torque = false;
+	ocm.direct_actuator = false;
+	_offboard_ctrl_pub.publish(ocm);
+
+	// 发布速度设定值（NED坐标系）
+	trajectory_setpoint_s sp{};
+	sp.timestamp = ocm.timestamp;
+
+	// 初始化所有字段为NaN（表示不控制）
+	sp.position[0] = NAN;
+	sp.position[1] = NAN;
+	sp.position[2] = NAN;
+	sp.velocity[0] = NAN;
+	sp.velocity[1] = NAN;
+	sp.velocity[2] = NAN;
+	sp.acceleration[0] = NAN;
+	sp.acceleration[1] = NAN;
+	sp.acceleration[2] = NAN;
+	sp.yaw = NAN;
+	sp.yawspeed = NAN;
+
+	// 设置速度控制（NED坐标系：velocity[0]=North, velocity[1]=East, velocity[2]=Down）
+	sp.velocity[0] = vx;  // North方向速度（前向）
+	sp.velocity[1] = vy;  // East方向速度（右侧）
+	sp.velocity[2] = -vz; // Down方向速度（向下为正，所以取负）
+	sp.yawspeed = yaw_rate;  // 偏航角速度
+
+	_traj_sp_pub.publish(sp);
+}
+
+/**
+ * @brief 处理制导逻辑
+ *
+ * 根据目标脱靶量（像素偏差）计算速度控制指令：
+ * - 像素偏差转换为速度指令：v = -KP * pixel_offset
+ * - 负号表示：目标在图像右侧（正像素），飞控向左移动（负速度）
+ * - 应用死区：小于死区阈值的偏差不产生控制
+ * - 速度限幅：限制最大速度，确保安全
+ */
+void AttackVision::handle_guidance()
+{
+	const float kp = _param_av_kp.get();      // 速度控制增益（m/s每像素）
+	const float dead = _param_av_dead.get();  // 像素死区
+	const float maxv = _param_av_max_v.get(); // 最大速度限制
+
+	float ex = (float)_pix_offset_x;  // 方位方向像素偏差
+	float ey = (float)_pix_offset_y;  // 俯仰方向像素偏差
+
+	if (PX4_ISFINITE(ex) && PX4_ISFINITE(ey)) {
+		// 应用死区：小于死区阈值时清零
+		if (fabsf(ex) < dead) ex = 0.f;
+		if (fabsf(ey) < dead) ey = 0.f;
+
+		// 计算速度指令：v = -KP * pixel（负号保证控制方向正确）
+		// 限幅保护：限制在[-maxv, maxv]范围内
+		float vx = -math::constrain(kp * ex, -maxv, maxv);  // 前向速度（对应方位偏差）
+		float vy = -math::constrain(kp * ey, -maxv, maxv);  // 横向速度（对应俯仰偏差）
+
+		// 发布速度控制指令（垂直速度和偏航角速度保持为0）
+		publish_offboard_velocity(vx, vy, 0.f, 0.f);
+	}
+}
+
+/**
+ * @brief 主运行循环
+ *
+ * 工作流程：
+ * 1. 检查模块使能开关
+ * 2. 打开串口
+ * 3. 循环读取串口数据并解析帧
+ * 4. 根据锁定状态和超时情况，切换模式并发布控制指令
+ */
+void AttackVision::Run()
+{
+	// 检查模块使能开关
+	if (_param_av_en.get() <= 0) {
+		PX4_WARN("AAATTKVIS_EN disabled");
+		exit_and_cleanup();
+		return;
+	}
+
+	// 打开串口
+	if (!open_uart()) {
+		PX4_ERR("UART open failed");
+		exit_and_cleanup();
+		return;
+	}
+
+	// 设置文件描述符为非阻塞模式
+	int flags = fcntl(_fd, F_GETFL, 0);
+	fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+
+	PX4_INFO("攻击视觉模块启动成功，开始主循环");
+
+	const uint64_t frame_timeout_us = 200000;  // 200ms超时
+
+	while (!should_exit()) {
+		// 尝试读取帧数据
+		if (try_read_frame()) {
+		// 成功读取到一帧
+		static int frame_count = 0;
+		frame_count++;
+		if (frame_count <= 10) {
+			// PX4_INFO("成功处理第 %d 帧", frame_count);
+		}
+		}
+
+		// 检查数据有效性
+		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
+
+		// 判断是否需要进入制导模式
+		if (_lock_active && frame_valid_recent) {
+		// 锁定有效且数据新鲜
+		if (switch_to_offboard()) {
+			handle_guidance();
+		}
+		} else {
+		// 失锁或超时
+		if (frame_valid_recent) {
+			// 有数据但未锁定，正常情况
+		} else {
+			// 长时间无数据，切换回悬停
+			switch_to_hold();
+		}
+		}
+
+		// 短暂休眠，避免过度占用CPU
+		usleep(10000);  // 10ms
+	}
+
+	// 退出清理
+	exit_and_cleanup();
+}
+
+
+extern "C" __EXPORT int attack_vision_main(int argc, char *argv[])
+{
+	return AttackVision::main(argc, argv);
+}
+
+
