@@ -417,3 +417,160 @@ A: 修改 `handle_guidance()` 函数中的速度计算符号，或调整参数 `
 **最后更新**：2025年
 **作者**：PX4开发团队
 
+
+## 十二、静态测试（SITL）
+
+本节指导在不接真实吊舱、不起飞的前提下，通过 PX4 SITL、虚拟串口与数据回放验证模块功能。
+
+### 12.1 目标
+
+- 验证帧解析（帧头/尾、锁定位、像素偏差、异或校验）
+- 验证控制逻辑（死区、KP、速度限幅）
+- 验证模式切换（锁定生效→Offboard，失锁/超时→Loiter）
+- 验证 uORB 输出（`offboard_control_mode`、`trajectory_setpoint` 等）
+
+### 12.2 前置条件
+
+- 已安装 PX4 工具链（1.15）
+- Linux 主机可用 `socat`、`python3`
+- 已编译 SITL：`make px4_sitl_default` 可用
+
+### 12.3 SITL 下的串口设备路径
+
+源码已在 SITL/Posix 下将串口设备固定为 `/tmp/attack_vision_tty`，硬件保持 `/dev/ttyS5`。对应实现参见 `open_uart()`：
+
+- SITL/Posix：`/tmp/attack_vision_tty`
+- 硬件：`/dev/ttyS5`
+
+### 12.4 创建虚拟串口（PTY）
+
+**方法1：使用 Python 脚本（推荐）**
+
+在终端运行并保持：
+
+```bash
+cd /home/www/px4_wlh/px4-6xmain-1.15/src/modules/attack_vision
+python3 create_virtual_uart.py
+```
+
+这个脚本会：
+- 创建虚拟串口对（主从 PTY）
+- 创建符号链接 `/tmp/attack_vision_tty`（模块端）
+- 创建命名管道（FIFO）`/tmp/attack_vision_fifo`（测试脚本端）
+- 实时转发数据并显示传输状态
+
+**方法2：使用 socat（备选，可能有兼容性问题）**
+
+如果 Python 方法不可用，可以尝试 socat：
+
+```bash
+socat -d -d pty,raw,echo=0,link=/tmp/attack_vision_tty \
+             pty,raw,echo=0,link=/tmp/attack_vision_src
+```
+
+**注意**：socat 在某些系统上可能无法正常工作，推荐使用方法1。
+
+- `/tmp/attack_vision_tty`：供模块在 SITL 中打开（符号链接到 slave PTY）
+- `/tmp/attack_vision_fifo`：供测试脚本写入（命名管道，数据会转发到 master PTY）
+
+### 12.5 启动 SITL 并配置参数
+
+```bash
+make px4_sitl_default none
+```
+
+进入 PX4 控制台后：
+
+```bash
+param set AAATTKVIS_EN 1
+param set AV_BAUD 115200
+param set AV_KP 0.001
+param set AV_DEAD 5.0
+param set AV_MAX_V 1.0
+param save
+
+attack_vision start
+attack_vision status
+```
+
+期望看到 `fd>0`（串口打开成功）。
+
+### 12.6 发送测试帧（Python 回放）
+
+新建文件 `av_frame_sender.py` 并执行 `python3 av_frame_sender.py`：
+
+```python
+#!/usr/bin/env python3
+import os
+import time
+import struct
+
+DEV = "/tmp/attack_vision_src"
+HZ = 25.0
+
+def build_frame(locked: bool, pix_x: int, pix_y: int) -> bytes:
+    data = bytearray(64)
+    data[0] = 0xFC
+    data[1] = 0x2C
+
+    status = 0
+    if locked:
+        status |= (1 << 9)  # Bit9=1 表示 01 锁定示例
+    data[4:6] = struct.pack('<H', status)  # 第5-6字节，小端
+
+    data[8] = 0x07 if locked else 0x00     # 第9字节：伺服状态
+
+    data[58:60] = struct.pack('<h', int(pix_x))  # X: 第59-60字节
+    data[60:62] = struct.pack('<h', int(pix_y))  # Y: 第61-62字节
+
+    xor_val = 0
+    for b in data[2:62]:
+        xor_val ^= b
+    data[62] = xor_val & 0xFF              # 校验：第63字节
+
+    data[63] = 0xF0                        # 帧尾：第64字节
+    return bytes(data)
+
+def main():
+    fd = os.open(DEV, os.O_RDWR | os.O_SYNC)
+    try:
+        t = 0.0
+        dt = 1.0 / HZ
+        while True:
+            pix_x = 50 if (int(t) % 4) < 2 else -50
+            pix_y = 30 if (int(t / 2) % 4) < 2 else -30
+            locked = (int(t) % 10) < 5      # 每5秒锁定/未锁定切换
+            frame = build_frame(locked, pix_x, pix_y)
+            os.write(fd, frame)
+            time.sleep(dt)
+            t += dt
+    finally:
+        os.close(fd)
+
+if __name__ == "__main__":
+    main()
+```
+
+### 12.7 观测与验证
+
+在 SITL 控制台：
+
+```bash
+attack_vision status
+listener vehicle_status
+listener offboard_control_mode
+listener trajectory_setpoint
+```
+
+期望：
+- 未锁定 → 不进入 Offboard 或回到 Loiter；速度设定点为 0/NaN
+- 锁定且偏差超出 `AV_DEAD` → 进入 Offboard；速度随像素变化且限幅 `AV_MAX_V`
+- 停止回放 ≥200ms 或清除锁定 → 返回 Loiter
+
+### 12.8 排错要点
+
+- `attack_vision` 命令不存在：确认模块已被 SITL 编译（一般默认包含），重新构建 `make px4_sitl_default none`
+- 串口打开失败：确认 `socat` 正在运行并生成 `/tmp/attack_vision_tty`
+- 无速度输出：检查 `AV_*` 参数、锁定位（Bit9~10）、伺服状态（0x07）
+- 校验失败：确认异或范围索引 `[2..61]`，校验位索引 `62`，帧尾 `0xF0`
+
