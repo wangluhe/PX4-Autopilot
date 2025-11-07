@@ -168,23 +168,108 @@ bool AttackVision::configure_uart(int baudrate)
  *
  * 注意：默认使用/dev/ttyS2（TELEM2口），对应6xrt板子的TELEM2接口
  */
+// bool AttackVision::open_uart()
+// {
+// 	#ifdef __PX4_POSIX
+// 	// SITL/Posix 下直接使用 FIFO，更简单可靠
+// 	const char *dev = "/tmp/attack_vision_fifo";
+// 	// FIFO 需要以只读模式打开（会阻塞直到有写入端）
+// 	_fd = ::open(dev, O_RDONLY | O_NONBLOCK);
+// 	if (_fd < 0) {
+// 		PX4_ERR("open %s failed (FIFO): %s", dev, strerror(errno));
+// 		return false;
+// 	}
+// 	PX4_INFO("FIFO opened: %s, fd=%d (non-blocking)", dev, _fd);
+// 	// FIFO 不需要配置串口参数
+// 	return true;
+// 	#else
+// 	// 硬件板卡默认 TELEM2 口
+// 	const char *dev = "/dev/ttyS5";  // TELEM2口（6xrt板子）
+// 	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+// 	if (_fd < 0) {
+// 		PX4_ERR("open %s failed", dev);
+// 		return false;
+// 	}
+// 	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
+// 	bool ret = configure_uart(_param_av_baud.get());
+// 	if (ret) {
+// 		PX4_INFO("UART configured: baud=%d", _param_av_baud.get());
+// 	}
+// 	return ret;
+// 	#endif
+// }
+
+
+// bool AttackVision::open_uart()
+// {
+// 	#ifdef __PX4_POSIX
+// 	// SITL/Posix 下使用虚拟串口设备
+// 	const char *dev = "/tmp/attack_vision_tty";  // 修改这里：使用tty而不是fifo
+
+// 	// 以读写模式打开虚拟串口设备
+// 	_fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
+// 	if (_fd < 0) {
+// 		PX4_ERR("open %s failed: %s", dev, strerror(errno));
+// 		return false;
+// 	}
+// 	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
+
+// 	// 配置串口参数（即使虚拟串口也需要配置）
+// 	bool ret = configure_uart(_param_av_baud.get());
+// 	if (ret) {
+// 		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
+// 	}
+// 	return ret;
+// 	#else
+// 	// 硬件板卡默认 TELEM2 口
+// 	const char *dev = "/dev/ttyS5";  // TELEM2口（6xrt板子）
+// 	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+// 	if (_fd < 0) {
+// 		PX4_ERR("open %s failed", dev);
+// 		return false;
+// 	}
+// 	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
+// 	bool ret = configure_uart(_param_av_baud.get());
+// 	if (ret) {
+// 		PX4_INFO("UART configured: baud=%d", _param_av_baud.get());
+// 	}
+// 	return ret;
+// 	#endif
+// }
+
 bool AttackVision::open_uart()
 {
 	#ifdef __PX4_POSIX
-	// SITL/Posix 下直接使用 FIFO，更简单可靠
-	const char *dev = "/tmp/attack_vision_fifo";
-	// FIFO 需要以只读模式打开（会阻塞直到有写入端）
-	_fd = ::open(dev, O_RDONLY | O_NONBLOCK);
-	if (_fd < 0) {
-		PX4_ERR("open %s failed (FIFO): %s", dev, strerror(errno));
+	// SITL/Posix 下使用虚拟串口设备
+	const char *dev = "/tmp/attack_vision_tty";
+
+	PX4_INFO("尝试打开虚拟串口: %s", dev);
+
+	// 先检查设备是否存在
+	if (access(dev, F_OK) != 0) {
+		PX4_ERR("虚拟串口设备不存在: %s", dev);
 		return false;
 	}
-	PX4_INFO("FIFO opened: %s, fd=%d (non-blocking)", dev, _fd);
-	// FIFO 不需要配置串口参数
-	return true;
+
+	// 以读写模式打开虚拟串口设备
+	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+	if (_fd < 0) {
+		PX4_ERR("open %s failed: %s", dev, strerror(errno));
+		return false;
+	}
+	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
+
+	// 配置串口参数
+	bool ret = configure_uart(_param_av_baud.get());
+	if (ret) {
+		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
+	} else {
+		PX4_ERR("Failed to configure virtual UART");
+	}
+	return ret;
 	#else
 	// 硬件板卡默认 TELEM2 口
-	const char *dev = "/dev/ttyS5";  // TELEM2口（6xrt板子）
+	const char *dev = "/dev/ttyS5";
 	_fd = ::open(dev, O_RDWR | O_NOCTTY);
 	if (_fd < 0) {
 		PX4_ERR("open %s failed", dev);
@@ -198,6 +283,7 @@ bool AttackVision::open_uart()
 	return ret;
 	#endif
 }
+
 
 /**
  * @brief 校验帧格式
@@ -233,30 +319,65 @@ bool AttackVision::validate_frame(const uint8_t *frame)
  */
 bool AttackVision::try_read_frame()
 {
-	if (_fd < 0) return false;
+
+	if (_fd < 0) {
+		PX4_ERR("文件描述符无效: %d", _fd);
+		return false;
+	}
+
 	uint8_t byte;
 	ssize_t n = ::read(_fd, &byte, 1);
-	if (n != 1) return false;
 
-	// 调试信息：记录读取到的字节（仅在前几次输出）
+	if (n == 0) {
+		// 没有数据可读
+		static int zero_count = 0;
+		if (zero_count < 5) {
+		PX4_INFO("read返回0: 无数据可读 (非阻塞模式正常)");
+		zero_count++;
+		}
+		return false;
+	} else if (n < 0) {
+		if (errno == EAGAIN) {
+		// 非阻塞模式下没有数据是正常的
+		return false;
+		} else {
+		PX4_ERR("读取错误: %s", strerror(errno));
+		return false;
+		}
+	}
+
+	// 成功读取到字节
 	static int read_count = 0;
-	if (read_count < 20) {  // 增加输出次数
-		PX4_INFO("read byte: 0x%02X (buf_len=%d)", byte, _buf_len);
+	if (read_count < 20) {
+		PX4_INFO("成功读取字节: 0x%02X (buf_len=%d)", byte, _buf_len);
 		read_count++;
 	}
 
-	// 寻找帧头：如果缓冲区为空，第一个字节必须是0xFC
+	// if (_fd < 0) return false;
+	// uint8_t byte;
+	// ssize_t n = ::read(_fd, &byte, 1);
+	// if (n != 1) return false;
+
+	// // 调试信息：记录读取到的字节（仅在前几次输出）
+	// static int read_count = 0;
+	// if (read_count < 20) {  // 增加输出次数
+	// 	PX4_INFO("read byte: 0x%02X (buf_len=%d)", byte, _buf_len);
+	// 	read_count++;
+	// }
+
+
 	if (_buf_len == 0) {
 		if (byte != FRAME_HEAD_0) {
-			// 调试信息：第一个字节不是帧头
 			static int skip_count = 0;
 			if (skip_count < 5) {
-				PX4_WARN("skip non-header byte: 0x%02X (expecting 0xFC)", byte);
+				PX4_WARN("跳过非帧头字节: 0x%02X (期望 0xFC)", byte);
 				skip_count++;
 			}
 			return false;
 		}
 	}
+
+
 	_buf[_buf_len++] = byte;
 	if (_buf_len == 1) return false;  // 等待第二个字节
 
