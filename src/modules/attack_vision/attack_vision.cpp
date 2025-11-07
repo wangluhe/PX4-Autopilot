@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <px4_platform_common/cli.h>
 
 /**
@@ -111,7 +112,19 @@ int AttackVision::print_usage(const char *reason)
 
 int AttackVision::print_status()
 {
-	PX4_INFO("attack_vision running, fd=%d, lock=%d, pix=(%d,%d)", _fd, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+	uint64_t now_us = hrt_absolute_time();
+	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
+
+	PX4_INFO("attack_vision running, fd=%d, lock=%d, pix=(%d,%d)",
+		 _fd, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+	PX4_INFO("  buf_len=%d, last_frame_age=%.3f ms",
+		 _buf_len, (double)(time_since_last_frame) / 1000.0);
+
+	// 如果长时间没有收到帧，输出警告
+	if (time_since_last_frame > 500000) {  // 500ms
+		PX4_WARN("  No frame received for %.3f ms - check data source", (double)(time_since_last_frame) / 1000.0);
+	}
+
 	return 0;
 }
 
@@ -157,13 +170,33 @@ bool AttackVision::configure_uart(int baudrate)
  */
 bool AttackVision::open_uart()
 {
-	const char *dev = "/dev/ttyS2";  // TELEM2口（6xrt板子）
+	#ifdef __PX4_POSIX
+	// SITL/Posix 下直接使用 FIFO，更简单可靠
+	const char *dev = "/tmp/attack_vision_fifo";
+	// FIFO 需要以只读模式打开（会阻塞直到有写入端）
+	_fd = ::open(dev, O_RDONLY | O_NONBLOCK);
+	if (_fd < 0) {
+		PX4_ERR("open %s failed (FIFO): %s", dev, strerror(errno));
+		return false;
+	}
+	PX4_INFO("FIFO opened: %s, fd=%d (non-blocking)", dev, _fd);
+	// FIFO 不需要配置串口参数
+	return true;
+	#else
+	// 硬件板卡默认 TELEM2 口
+	const char *dev = "/dev/ttyS5";  // TELEM2口（6xrt板子）
 	_fd = ::open(dev, O_RDWR | O_NOCTTY);
 	if (_fd < 0) {
 		PX4_ERR("open %s failed", dev);
 		return false;
 	}
-	return configure_uart(_param_av_baud.get());
+	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
+	bool ret = configure_uart(_param_av_baud.get());
+	if (ret) {
+		PX4_INFO("UART configured: baud=%d", _param_av_baud.get());
+	}
+	return ret;
+	#endif
 }
 
 /**
@@ -205,9 +238,24 @@ bool AttackVision::try_read_frame()
 	ssize_t n = ::read(_fd, &byte, 1);
 	if (n != 1) return false;
 
+	// 调试信息：记录读取到的字节（仅在前几次输出）
+	static int read_count = 0;
+	if (read_count < 20) {  // 增加输出次数
+		PX4_INFO("read byte: 0x%02X (buf_len=%d)", byte, _buf_len);
+		read_count++;
+	}
+
 	// 寻找帧头：如果缓冲区为空，第一个字节必须是0xFC
 	if (_buf_len == 0) {
-		if (byte != FRAME_HEAD_0) return false;
+		if (byte != FRAME_HEAD_0) {
+			// 调试信息：第一个字节不是帧头
+			static int skip_count = 0;
+			if (skip_count < 5) {
+				PX4_WARN("skip non-header byte: 0x%02X (expecting 0xFC)", byte);
+				skip_count++;
+			}
+			return false;
+		}
 	}
 	_buf[_buf_len++] = byte;
 	if (_buf_len == 1) return false;  // 等待第二个字节
@@ -223,6 +271,13 @@ bool AttackVision::try_read_frame()
 	bool ok = validate_frame(_buf);
 	if (!ok) {
 		// 校验失败：滑动窗口，保留最后63字节，继续搜索
+		// 调试信息：输出校验失败原因（仅在前几次失败时输出，避免日志过多）
+		static int fail_count = 0;
+		if (fail_count < 5) {
+			PX4_WARN("frame validation failed: head=0x%02X%02X tail=0x%02X xor=0x%02X",
+				 _buf[0], _buf[1], _buf[63], _buf[62]);
+			fail_count++;
+		}
 		memmove(_buf, _buf + 1, FRAME_LEN - 1);
 		_buf_len = FRAME_LEN - 1;
 		return false;
@@ -250,6 +305,14 @@ bool AttackVision::try_read_frame()
 	_pix_offset_x = (int16_t)((uint16_t)_buf[58] | ((uint16_t)_buf[59] << 8));
 	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
+
+	// 调试信息：成功解析帧时输出（仅在前几次输出，避免日志过多）
+	static int success_count = 0;
+	if (success_count < 3) {
+		PX4_INFO("frame parsed: lock=%d lock_bits=0x%X servo=0x%02X pix=(%d,%d)",
+			 (int)_lock_active, lock_bits, servo_state, (int)_pix_offset_x, (int)_pix_offset_y);
+		success_count++;
+	}
 
 	_buf_len = 0;  // 重置缓冲区，准备接收下一帧
 	return true;
@@ -417,14 +480,46 @@ void AttackVision::Run()
 	const uint64_t frame_timeout_us = 200000;  // 200ms超时（5倍于40ms帧周期）
 
 	// 主循环
+	static int poll_count = 0;
+	static uint64_t last_status_time = 0;
+
 	while (!should_exit()) {
 		// 轮询串口数据（超时20ms）
 		int ret = px4_poll(&p, 1, 20);
 		if (ret > 0 && (p.revents & POLLIN)) {
 			// 有数据可读，尝试解析帧（可能连续读取多帧）
+			if (poll_count < 10) {  // 增加输出次数
+				PX4_INFO("poll returned: ret=%d, revents=0x%X", ret, p.revents);
+				poll_count++;
+			}
+			int frames_parsed = 0;
 			while (try_read_frame()) {
+				frames_parsed++;
 				// 每解析成功一帧，内部状态已更新
 			}
+			if (frames_parsed > 0 && poll_count <= 10) {
+				PX4_INFO("parsed %d frame(s) in this poll", frames_parsed);
+			}
+		} else if (ret == 0) {
+			// 超时（正常情况，不输出日志避免刷屏）
+		} else {
+			// poll 错误
+			static int poll_err_count = 0;
+			if (poll_err_count < 5) {  // 增加输出次数
+				PX4_ERR("poll error: ret=%d", ret);
+				poll_err_count++;
+			}
+		}
+
+		// 每5秒输出一次状态（如果长时间没有收到数据）
+		uint64_t now = hrt_absolute_time();
+		if (now - last_status_time > 5000000) {  // 5秒
+			uint64_t time_since_last = now - _last_frame_time_us;
+			if (time_since_last > 1000000) {  // 超过1秒没收到帧
+				PX4_WARN("No frame received for %.1f s (buf_len=%d)",
+					 (double)(time_since_last) / 1000000.0, _buf_len);
+			}
+			last_status_time = now;
 		}
 
 		// 检查数据有效性：最后一次有效帧在200ms内
