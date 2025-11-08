@@ -47,15 +47,15 @@ AttackVision::~AttackVision()
 
 int AttackVision::task_spawn(int argc, char *argv[])
 {
-    AttackVision *instance = new AttackVision();
-    if (instance) {
-        _object.store(instance);
-        _task_id = task_id_is_work_queue;
-        instance->ScheduleNow();
-        return PX4_OK;
-    }
-    PX4_ERR("alloc failed");
-    return PX4_ERROR;
+	AttackVision *instance = new AttackVision();
+	if (instance) {
+		_object.store(instance);
+		_task_id = task_id_is_work_queue;
+		instance->ScheduleNow();
+		return PX4_OK;
+	}
+	PX4_ERR("alloc failed");
+	return PX4_ERROR;
 }
 
 AttackVision *AttackVision::instantiate(int argc, char *argv[])
@@ -116,9 +116,9 @@ int AttackVision::print_status()
 	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
 
 	PX4_INFO("attack_vision running, fd=%d, lock=%d, pix=(%d,%d)",
-		 _fd, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+		_fd, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
 	PX4_INFO("  buf_len=%d, last_frame_age=%.3f ms",
-		 _buf_len, (double)(time_since_last_frame) / 1000.0);
+		_buf_len, (double)(time_since_last_frame) / 1000.0);
 
 	// 如果长时间没有收到帧，输出警告
 	if (time_since_last_frame > 500000) {  // 500ms
@@ -199,49 +199,11 @@ bool AttackVision::configure_uart(int baudrate)
 // 	#endif
 // }
 
-
-// bool AttackVision::open_uart()
-// {
-// 	#ifdef __PX4_POSIX
-// 	// SITL/Posix 下使用虚拟串口设备
-// 	const char *dev = "/tmp/attack_vision_tty";  // 修改这里：使用tty而不是fifo
-
-// 	// 以读写模式打开虚拟串口设备
-// 	_fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
-// 	if (_fd < 0) {
-// 		PX4_ERR("open %s failed: %s", dev, strerror(errno));
-// 		return false;
-// 	}
-// 	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
-
-// 	// 配置串口参数（即使虚拟串口也需要配置）
-// 	bool ret = configure_uart(_param_av_baud.get());
-// 	if (ret) {
-// 		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
-// 	}
-// 	return ret;
-// 	#else
-// 	// 硬件板卡默认 TELEM2 口
-// 	const char *dev = "/dev/ttyS5";  // TELEM2口（6xrt板子）
-// 	_fd = ::open(dev, O_RDWR | O_NOCTTY);
-// 	if (_fd < 0) {
-// 		PX4_ERR("open %s failed", dev);
-// 		return false;
-// 	}
-// 	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
-// 	bool ret = configure_uart(_param_av_baud.get());
-// 	if (ret) {
-// 		PX4_INFO("UART configured: baud=%d", _param_av_baud.get());
-// 	}
-// 	return ret;
-// 	#endif
-// }
-
 bool AttackVision::open_uart()
 {
 	#ifdef __PX4_POSIX
 	// SITL/Posix 下使用虚拟串口设备
-	const char *dev = "/tmp/attack_vision_tty";
+	const char *dev = "/tmp/attack_vision_tty";   // 修改这里：使用tty而不是fifo
 
 	PX4_INFO("尝试打开虚拟串口: %s", dev);
 
@@ -252,14 +214,14 @@ bool AttackVision::open_uart()
 	}
 
 	// 以读写模式打开虚拟串口设备
-	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+	_fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (_fd < 0) {
 		PX4_ERR("open %s failed: %s", dev, strerror(errno));
 		return false;
 	}
 	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
 
-	// 配置串口参数
+	// 配置串口参数（即使虚拟串口也需要配置）
 	bool ret = configure_uart(_param_av_baud.get());
 	if (ret) {
 		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
@@ -283,6 +245,7 @@ bool AttackVision::open_uart()
 	return ret;
 	#endif
 }
+
 
 
 /**
@@ -451,7 +414,7 @@ bool AttackVision::switch_to_offboard()
 	if (_vehicle_status_sub.copy(&vs)) {
 		// 检查是否已在Offboard模式且已解锁
 		if (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD &&
-		    vs.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+			vs.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
 			return true;
 		}
 	}

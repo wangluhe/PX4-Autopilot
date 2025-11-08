@@ -7,14 +7,14 @@
 ############################################################################
 
 px4_add_module(
-    MODULE modules__attack_vision
-    MAIN attack_vision
-    SRCS
-        attack_vision_test.cpp
-        attack_vision.hpp
-        attack_vision_params.c
-    DEPENDS
-        px4_work_queue
+	MODULE modules__attack_vision
+	MAIN attack_vision
+	SRCS
+		attack_vision_test.cpp
+		attack_vision.hpp
+		attack_vision_params.c
+	DEPENDS
+		px4_work_queue
 )
 
 

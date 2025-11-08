@@ -167,7 +167,7 @@ bool AttackVision::open_uart()
 {
 	#ifdef __PX4_POSIX
 	// SITL/Posix 下使用虚拟串口设备
-	const char *dev = "/tmp/attack_vision_tty";
+	const char *dev = "/tmp/attack_vision_tty";   // 修改这里：使用tty而不是fifo
 
 	PX4_INFO("尝试打开虚拟串口: %s", dev);
 
@@ -178,14 +178,14 @@ bool AttackVision::open_uart()
 	}
 
 	// 以读写模式打开虚拟串口设备
-	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+	_fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (_fd < 0) {
 		PX4_ERR("open %s failed: %s", dev, strerror(errno));
 		return false;
 	}
 	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
 
-	// 配置串口参数
+	// 配置串口参数（即使虚拟串口也需要配置）
 	bool ret = configure_uart(_param_av_baud.get());
 	if (ret) {
 		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
@@ -209,6 +209,7 @@ bool AttackVision::open_uart()
 	return ret;
 	#endif
 }
+
 
 
 /**
@@ -237,13 +238,12 @@ bool AttackVision::validate_frame(const uint8_t *frame)
  * @brief 尝试从串口读取一帧数据
  * @return true=成功读取并解析一帧，false=未完成或失败
  */
-/**
- * @brief 尝试从串口读取一帧数据
- * @return true=成功读取并解析一帧，false=未完成或失败
- */
+
 bool AttackVision::try_read_frame()
 {
+
 	if (_fd < 0) {
+		PX4_ERR("文件描述符无效: %d", _fd);
 		return false;
 	}
 
@@ -251,17 +251,28 @@ bool AttackVision::try_read_frame()
 	uint8_t read_buf[256];
 	ssize_t n = ::read(_fd, read_buf, sizeof(read_buf));
 
-	if (n <= 0) {
-		if (n < 0 && errno != EAGAIN) {
-		PX4_ERR("读取错误: %s", strerror(errno));
+	if (n == 0) {
+		// 没有数据可读（非阻塞模式正常）
+		static int zero_count = 0;
+		if (zero_count < 3) {
+		PX4_INFO("read返回0: 无数据可读 (非阻塞模式正常)");
+		zero_count++;
 		}
 		return false;
+	} else if (n < 0) {
+		if (errno == EAGAIN) {
+		// 非阻塞模式下没有数据是正常的
+		return false;
+		} else {
+		PX4_ERR("读取错误: %s", strerror(errno));
+		return false;
+		}
 	}
 
-	// 调试信息：显示读取到的字节数
+	// 成功读取到数据
 	static int read_count = 0;
 	if (read_count < 5) {
-		// PX4_INFO("成功读取 %zd 字节", n);  // 使用 %zd 适用于 ssize_t
+		PX4_INFO("成功读取 %zd 字节", n);// 一次性读取所有可用数据，而不是逐字节读取
 		read_count++;
 	}
 
@@ -270,8 +281,10 @@ bool AttackVision::try_read_frame()
 		uint8_t byte = read_buf[i];
 
 		// 调试信息：显示前几个字节的内容
-		if (read_count < 10 && i < 5) {
-		//     PX4_INFO("字节[%zd]: 0x%02X", i, byte);  // 使用 %zd 适用于 ssize_t
+		static int byte_display_count = 0;
+		if (byte_display_count < 10 && i < 5) {
+		PX4_INFO("字节[%zd]: 0x%02X", i, byte);
+		byte_display_count++;
 		}
 
 		_buf[_buf_len++] = byte;
@@ -519,10 +532,11 @@ void AttackVision::Run()
 
 		// 判断是否需要进入制导模式
 		if (_lock_active && frame_valid_recent) {
-		// 锁定有效且数据新鲜
-		if (switch_to_offboard()) {
-			handle_guidance();
+			// 锁定有效且数据新鲜
+			if (switch_to_offboard()) {
+				handle_guidance();
 		}
+
 		} else {
 		// 失锁或超时
 		if (frame_valid_recent) {
@@ -532,7 +546,6 @@ void AttackVision::Run()
 			switch_to_hold();
 		}
 		}
-
 		// 短暂休眠，避免过度占用CPU
 		usleep(10000);  // 10ms
 	}
@@ -540,7 +553,6 @@ void AttackVision::Run()
 	// 退出清理
 	exit_and_cleanup();
 }
-
 
 extern "C" __EXPORT int attack_vision_main(int argc, char *argv[])
 {
