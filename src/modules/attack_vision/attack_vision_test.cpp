@@ -238,7 +238,6 @@ bool AttackVision::validate_frame(const uint8_t *frame)
  * @brief 尝试从串口读取一帧数据
  * @return true=成功读取并解析一帧，false=未完成或失败
  */
-
 bool AttackVision::try_read_frame()
 {
 
@@ -303,7 +302,7 @@ bool AttackVision::try_read_frame()
 
 			// 调试信息
 			static int success_count = 0;
-			if (success_count < 3) {
+			if (success_count < 50) {
 			PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
 				(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
 			success_count++;
@@ -315,7 +314,7 @@ bool AttackVision::try_read_frame()
 			_buf_len = FRAME_LEN - 1;
 
 			static int fail_count = 0;
-			if (fail_count < 3) {
+			if (fail_count < 1000) {
 			PX4_WARN("帧校验失败，滑动窗口");
 			fail_count++;
 			}

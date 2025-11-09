@@ -71,7 +71,17 @@ private:
 	int16_t _pix_offset_x{0};  ///< 目标脱靶量-方位方向（像素，字节59-60，INT16）
 	int16_t _pix_offset_y{0};  ///< 目标脱靶量-俯仰方向（像素，字节61-62，INT16）
 
+	// ========== 状态机相关 ==========
+	enum class ModuleState {
+		HOLD,                   ///< 悬停模式
+		SWITCHING_TO_OFFBOARD,  ///< 正在切换到Offboard模式
+		OFFBOARD                ///< Offboard模式激活
+	};
+	ModuleState _module_state{ModuleState::HOLD};  ///< 当前模块状态
+
 	// ========== 控制逻辑相关 ==========
+	hrt_abstime _last_cmd_publish_time{0};  ///< 上次命令发布的时间戳（用于频率限制）
+	static constexpr uint64_t MIN_CMD_INTERVAL_US = 500000;  ///< 命令发布最小间隔（500ms）
 	void handle_guidance();  ///< 处理制导逻辑：根据像素偏差计算速度指令
 	void publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate);  ///< 发布Offboard速度设定值
 	bool switch_to_offboard();  ///< 切换到Offboard模式（如果尚未切换）
