@@ -336,6 +336,12 @@ then
 	payload_deliverer start
 fi
 
+if param greater -s AAATTKVIS_EN 0
+then
+	attack_vision start
+fi
+
+
 #user defined mavlink streams for instances can be in PATH
 . px4-rc.mavlink
 
