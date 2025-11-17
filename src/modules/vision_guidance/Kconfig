@@ -1,0 +1,7 @@
+menuconfig MODULES_VISION_GUIDANCE
+    bool "vision_guidance"
+    default n
+    ---help---
+        Enable vision guidance module for target tracking and terminal guidance.
+
+
