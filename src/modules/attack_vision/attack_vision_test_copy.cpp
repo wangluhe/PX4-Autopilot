@@ -167,7 +167,8 @@ bool AttackVision::open_uart()
 {
 	#ifdef __PX4_POSIX
 	// SITL/Posix 下使用虚拟串口设备
-	const char *dev = "/tmp/attack_vision_tty";   // 修改这里：使用tty而不是fifo
+	const char *dev = "/tmp/attack_vision_tty";   // 修改这里：使用tty而不是fifo，对应virtual_uart_service
+	// const char *dev = "/tmp/attack_vision_pty";   // 修改这里：使用pty而不是fifo,对应virtual_uart_service_fixed
 
 	PX4_INFO("尝试打开虚拟串口: %s", dev);
 
@@ -448,29 +449,6 @@ void AttackVision::parse_frame_data()
  *
  * 注意：需要飞控已解锁且允许Offboard模式（通过地面站参数设置）
  */
-// bool AttackVision::switch_to_offboard()
-// {
-// 	vehicle_status_s vs{};
-// 	if (_vehicle_status_sub.copy(&vs)) {
-// 		// 检查是否已在Offboard模式且已解锁
-// 		if (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD &&
-// 			vs.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
-// 			return true;
-// 		}
-// 	}
-
-// 	// 发送模式切换命令
-// 	vehicle_command_s cmd{};
-// 	cmd.timestamp = hrt_absolute_time();
-// 	cmd.param1 = 1;  // custom mode
-// 	cmd.param2 = 6;  // main mode: OFFBOARD (MAV_MODE_FLAG_CUSTOM_MODE_ENABLED | MAV_MODE_FLAG_SAFETY_ARMED)
-// 	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
-// 	cmd.target_system = 1;
-// 	cmd.target_component = 1;
-// 	_vehicle_cmd_pub.publish(cmd);
-// 	return false;  // 切换中，下次循环再检查
-// }
-
 
 bool AttackVision::switch_to_offboard()
 {
@@ -518,18 +496,6 @@ bool AttackVision::switch_to_offboard()
  *
  * 当失锁或超时时，自动切换回悬停模式，确保飞行安全
  */
-// void AttackVision::switch_to_hold()
-// {
-// 	vehicle_command_s cmd{};
-// 	cmd.timestamp = hrt_absolute_time();
-// 	cmd.param1 = 1;  // custom mode
-// 	cmd.param2 = 4;  // main mode: AUTO (4)
-// 	cmd.param3 = 3;  // submode: LOITER (3)
-// 	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
-// 	cmd.target_system = 1;
-// 	cmd.target_component = 1;
-// 	_vehicle_cmd_pub.publish(cmd);
-// }
 
 void AttackVision::switch_to_hold()
 {
@@ -643,7 +609,7 @@ void AttackVision::handle_guidance()
 //  * 4. 根据锁定状态和超时情况，切换模式并发布控制指令
 //  */
 
-//非poll读取方式
+// 非poll读取方式
 // void AttackVision::Run()
 // {
 // 	// 检查模块使能开关
@@ -706,6 +672,148 @@ void AttackVision::handle_guidance()
 // 	exit_and_cleanup();
 // }
 
+
+
+// poll,问题
+// void AttackVision::Run()
+// {
+// 	// 检查模块使能开关
+// 	if (_param_av_en.get() <= 0) {
+// 		PX4_WARN("AAATTKVIS_EN disabled");
+// 		exit_and_cleanup();
+// 		return;
+// 	}
+
+// 	// 打开串口
+// 	if (!open_uart()) {
+// 		PX4_ERR("UART open failed");
+// 		exit_and_cleanup();
+// 		return;
+// 	}
+
+// 	PX4_INFO("攻击视觉模块启动成功，使用poll模式");
+
+// 	// 正确初始化 pollfd 结构体
+// 	px4_pollfd_struct_t fds[1];
+// 	fds[0].fd = _fd;
+// 	fds[0].events = POLLIN;    // 监听可读事件
+// 	fds[0].revents = 0;
+
+// 	const uint64_t frame_timeout_us = 200000;  // 200ms超时（5倍于40ms帧周期）
+
+// 	// 主循环
+// 	static uint64_t last_status_time = 0;
+// 	static int poll_success_count = 0;
+
+// 	while (!should_exit()) {
+// 		// 使用 poll 等待数据，超时时间100ms
+// 		int ret = px4_poll(fds, 1, 100);
+
+// 		if (ret < 0) {
+// 		// poll 错误
+// 		PX4_ERR("poll error: ret=%d, errno=%d: %s", ret, errno, strerror(errno));
+
+// 		// 检查文件描述符状态
+// 		if (errno == EBADF) {
+// 			PX4_ERR("文件描述符无效，尝试重新打开");
+// 			if (_fd >= 0) {
+// 			::close(_fd);
+// 			_fd = -1;
+// 			}
+// 			if (!open_uart()) {
+// 			PX4_ERR("重新打开串口失败");
+// 			usleep(1000000); // 等待1秒后重试
+// 			continue;
+// 			}
+// 			// 重新设置poll
+// 			fds[0].fd = _fd;
+// 			fds[0].events = POLLIN;
+// 			fds[0].revents = 0;
+// 		}
+// 		usleep(50000); // 错误时短暂休眠
+// 		continue;
+// 		} else if (ret == 0) {
+// 		// 超时，正常情况
+// 		// 可以在这里处理超时逻辑
+// 		} else {
+// 		// poll 成功，检查是否有可读数据
+// 		if (fds[0].revents & POLLIN) {
+// 			// 有数据可读
+// 			if (poll_success_count < 10) {
+// 			PX4_INFO("poll检测到数据可读，revents=0x%X", fds[0].revents);
+// 			poll_success_count++;
+// 			}
+
+// 			// 读取并处理所有可用帧
+// 			int frames_parsed = 0;
+// 			while (try_read_frame()) {
+// 			frames_parsed++;
+// 			}
+
+// 			if (frames_parsed > 0 && poll_success_count <= 10) {
+// 			PX4_INFO("本轮poll解析了 %d 帧", frames_parsed);
+// 			}
+// 		} else {
+// 			// 其他事件，可能是错误
+// 			if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+// 			PX4_ERR("poll检测到错误事件: revents=0x%X", fds[0].revents);
+// 			// 处理错误，可能需要重新打开串口
+// 			if (_fd >= 0) {
+// 				::close(_fd);
+// 				_fd = -1;
+// 			}
+// 			}
+// 		}
+// 		}
+
+// 		// 状态输出（每5秒）
+// 		uint64_t now = hrt_absolute_time();
+// 		if (now - last_status_time > 5000000) {
+// 		uint64_t time_since_last = now - _last_frame_time_us;
+// 		PX4_INFO("状态: fd=%d, buf_len=%d, 最后帧 %.1f 秒前",
+// 			_fd, _buf_len, (double)(time_since_last) / 1000000.0);
+// 		if (time_since_last > 1000000) {
+// 			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
+// 		}
+// 		last_status_time = now;
+// 		}
+
+// 		// 制导逻辑
+// 		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
+
+// 		// PX4_INFO("状态检查: lock=%d, frame_valid=%d, module_state=%d",
+// 		// 	(int)_lock_active, (int)frame_valid_recent, (int)_module_state);
+
+// 		if (_lock_active && frame_valid_recent) {
+// 		if (_module_state != ModuleState::OFFBOARD) {
+// 			// PX4_INFO("尝试切换到Offboard模式...");
+// 			if (switch_to_offboard()) {
+// 			_module_state = ModuleState::OFFBOARD;
+// 			PX4_INFO("已进入Offboard模式");
+// 			} else {
+// 			_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+// 			// PX4_INFO("切换到Offboard模式中...");
+// 			}
+// 		}
+
+// 		if (_module_state == ModuleState::OFFBOARD) {
+// 			PX4_INFO("执行制导控制");
+// 			handle_guidance();
+// 		}
+// 		} else {
+// 		if (_module_state != ModuleState::HOLD) {
+// 			PX4_INFO("条件不满足，切换回悬停模式");
+// 			switch_to_hold();
+// 			_module_state = ModuleState::HOLD;
+// 			PX4_INFO("已切换回悬停模式");
+// 		}
+// 		}
+// 	}
+// 	exit_and_cleanup();
+// }
+
+
+// 可以用，poll
 void AttackVision::Run()
 {
 	// 检查模块使能开关
@@ -730,49 +838,62 @@ void AttackVision::Run()
 	fds[0].events = POLLIN;    // 监听可读事件
 	fds[0].revents = 0;
 
-	const uint64_t frame_timeout_us = 200000;  // 200ms超时（5倍于40ms帧周期）
+	const uint64_t frame_timeout_us = 200000;  // 200ms超时
 
 	// 主循环
 	static uint64_t last_status_time = 0;
 	static int poll_success_count = 0;
+	static int poll_error_count = 0;
 
 	while (!should_exit()) {
+		// 检查文件描述符有效性
+		if (_fd < 0) {
+		PX4_ERR("文件描述符无效，尝试重新打开");
+		if (!open_uart()) {
+			PX4_ERR("重新打开串口失败");
+			usleep(1000000); // 等待1秒后重试
+			continue;
+		}
+		// 重新设置poll
+		fds[0].fd = _fd;
+		fds[0].events = POLLIN;
+		fds[0].revents = 0;
+		}
+
 		// 使用 poll 等待数据，超时时间100ms
 		int ret = px4_poll(fds, 1, 100);
 
 		if (ret < 0) {
 		// poll 错误
-		PX4_ERR("poll error: ret=%d, errno=%d: %s", ret, errno, strerror(errno));
+		poll_error_count++;
+		if (poll_error_count < 10 || (poll_error_count % 50) == 0) {
+			PX4_ERR("poll error: ret=%d, errno=%d: %s (count=%d)",
+			ret, errno, strerror(errno), poll_error_count);
+		}
 
 		// 检查文件描述符状态
-		if (errno == EBADF) {
-			PX4_ERR("文件描述符无效，尝试重新打开");
+		if (errno == EBADF || errno == EINVAL) {
+			PX4_ERR("文件描述符无效，关闭并重新打开");
 			if (_fd >= 0) {
 			::close(_fd);
 			_fd = -1;
 			}
-			if (!open_uart()) {
-			PX4_ERR("重新打开串口失败");
-			usleep(1000000); // 等待1秒后重试
-			continue;
-			}
-			// 重新设置poll
-			fds[0].fd = _fd;
-			fds[0].events = POLLIN;
-			fds[0].revents = 0;
+			fds[0].fd = -1;
 		}
 		usleep(50000); // 错误时短暂休眠
 		continue;
+
 		} else if (ret == 0) {
 		// 超时，正常情况
-		// 可以在这里处理超时逻辑
+		poll_success_count = 0; // 重置成功计数
+
 		} else {
 		// poll 成功，检查是否有可读数据
 		if (fds[0].revents & POLLIN) {
 			// 有数据可读
-			if (poll_success_count < 10) {
-			PX4_INFO("poll检测到数据可读，revents=0x%X", fds[0].revents);
 			poll_success_count++;
+			if (poll_success_count < 5) {
+			PX4_INFO("poll检测到数据可读，revents=0x%X", fds[0].revents);
 			}
 
 			// 读取并处理所有可用帧
@@ -781,18 +902,20 @@ void AttackVision::Run()
 			frames_parsed++;
 			}
 
-			if (frames_parsed > 0 && poll_success_count <= 10) {
-			// PX4_INFO("本轮poll解析了 %d 帧", frames_parsed);
+			if (frames_parsed > 0 && poll_success_count <= 5) {
+			PX4_INFO("本轮poll解析了 %d 帧", frames_parsed);
 			}
+
 		} else {
 			// 其他事件，可能是错误
 			if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
 			PX4_ERR("poll检测到错误事件: revents=0x%X", fds[0].revents);
-			// 处理错误，可能需要重新打开串口
+			// 处理错误，需要重新打开串口
 			if (_fd >= 0) {
 				::close(_fd);
 				_fd = -1;
 			}
+			fds[0].fd = -1;
 			}
 		}
 		}
@@ -801,8 +924,8 @@ void AttackVision::Run()
 		uint64_t now = hrt_absolute_time();
 		if (now - last_status_time > 5000000) {
 		uint64_t time_since_last = now - _last_frame_time_us;
-		PX4_INFO("状态: fd=%d, buf_len=%d, 最后帧 %.1f 秒前",
-			_fd, _buf_len, (double)(time_since_last) / 1000000.0);
+		PX4_INFO("状态: fd=%d, buf_len=%d, 最后帧 %.1f 秒前, poll错误=%d",
+			_fd, _buf_len, (double)(time_since_last) / 1000000.0, poll_error_count);
 		if (time_since_last > 1000000) {
 			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
 		}
@@ -812,18 +935,13 @@ void AttackVision::Run()
 		// 制导逻辑
 		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
 
-		// PX4_INFO("状态检查: lock=%d, frame_valid=%d, module_state=%d",
-		// 	(int)_lock_active, (int)frame_valid_recent, (int)_module_state);
-
 		if (_lock_active && frame_valid_recent) {
 		if (_module_state != ModuleState::OFFBOARD) {
-			// PX4_INFO("尝试切换到Offboard模式...");
 			if (switch_to_offboard()) {
 			_module_state = ModuleState::OFFBOARD;
 			PX4_INFO("已进入Offboard模式");
 			} else {
 			_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-			// PX4_INFO("切换到Offboard模式中...");
 			}
 		}
 
@@ -836,7 +954,6 @@ void AttackVision::Run()
 			PX4_INFO("条件不满足，切换回悬停模式");
 			switch_to_hold();
 			_module_state = ModuleState::HOLD;
-			PX4_INFO("已切换回悬停模式");
 		}
 		}
 	}
