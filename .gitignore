@@ -111,3 +111,4 @@ log/
 attack_vision.md
 px4-venv-6xrt/
 Tools/setup/xtensa-esp-elf-13.2.0_20240530-x86_64-linux-gnu.tar.xz
+.vscode/settings.json
