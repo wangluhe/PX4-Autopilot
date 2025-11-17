@@ -336,10 +336,13 @@ then
 	payload_deliverer start
 fi
 
-if param greater -s AAATTKVIS_EN 0
-then
-	attack_vision start
-fi
+# if param greater -s AAATTKVIS_EN 0
+# then
+# 	attack_vision start
+# fi
+
+# Vision Guidance
+# vision_guidance start
 
 
 #user defined mavlink streams for instances can be in PATH

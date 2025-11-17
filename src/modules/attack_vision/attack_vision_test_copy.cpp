@@ -355,7 +355,6 @@ void AttackVision::parse_frame_data()
 }
 
 
-
 /**
  * @brief 切换到Offboard模式
  * @return true=已在Offboard模式且已解锁，false=正在切换中或未解锁
