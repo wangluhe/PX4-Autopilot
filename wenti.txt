@@ -1,0 +1,128 @@
+@av_frame_sender.py @attack_vision_test_copy.cpp @virtual_uart_service.py 先打运行两个python文件，然后运行make px4_sitl_default none,
+成功运行
+INFO  [attack_vision] Virtual UART opened: /tmp/attack_vision_tty, fd=9
+INFO  [attack_vision] Virtual UART configured: baud=115200
+INFO  [attack_vision] poll检测到数据可读，revents=0x1
+INFO  [attack_vision] 成功读取 256 字节
+INFO  [attack_vision] 字节[0]: 0xFC
+INFO  [attack_vision] 字节[1]: 0x2C
+INFO  [attack_vision] 字节[2]: 0x00
+INFO  [attack_vision] 字节[3]: 0x00
+INFO  [attack_vision] 字节[4]: 0x00
+但是因为disarm,无法切换到offboard模式，原因已经找到，因为none模式下有些传感器不启动，不是主要问题
+INFO  [attack_vision] 条件不满足，切换回悬停模式
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+WARN  [health_and_arming_checks] Preflight Fail: Accel 0 uncalibrated
+WARN  [health_and_arming_checks] Preflight Fail: barometer 0 missing
+WARN  [health_and_arming_checks] Preflight Fail: Compass Sensor 0 missing
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 条件不满足，切换回悬停模式
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 条件不满足，切换回悬停模式
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 条件不满足，切换回悬停模式
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误=1
+INFO  [attack_vision] 条件不满足，切换回悬停模式
+INFO  [attack_vision] 状态: fd=9, buf_len=0, 最后帧 0.0 秒前, poll错误 =1
+
+
+但是运行make px4_sitl_default gz_x500就会一直报如下错误 
+INFO  [attack_vision] 尝试打开虚拟串口: /tmp/attack_vision_tty
+INFO  [attack_vision] Virtual UART opened: /tmp/attack_vision_tty, fd=37
+INFO  [attack_vision] Virtual UART configured: baud=115200
+INFO  [attack_vision] 攻击视觉模块启动成功，使用poll模式
+ERROR [attack_vision] poll error: ret=-1, errno=22: Invalid argument (count=1)
+ERROR [attack_vision] 文件描述符无效，关闭并重新打开
+ERROR [attack_vision] 文件描述符无效，尝试重新打开
+INFO  [attack_vision] 尝试打开虚拟串口: /tmp/attack_vision_tty
+INFO  [attack_vision] Virtual UART opened: /tmp/attack_vision_tty, fd=36
+INFO  [attack_vision] Virtual UART configured: baud=115200
+ERROR [attack_vision] poll error: ret=-1, errno=22: Invalid argument (count=2)
+ERROR [attack_vision] 文件描述符无效，关闭并重新打开
+INFO  [uxrce_dds_client] init UDP agent IP:127.0.0.1, port:8888
+ERROR [attack_vision] 文件描述符无效，尝试重新打开
+INFO  [attack_vision] 尝试打开虚拟串口: /tmp/attack_vision_tty
+INFO  [attack_vision] Virtual UART opened: /tmp/attack_vision_tty, fd=37
+INFO  [attack_vision] Virtual UART configured: baud=115200
+ERROR [attack_vision] poll error: ret=-1, errno=22: Invalid argument (count=3)
+ERROR [attack_vision] 文件描述符无效，关闭并重新打开
+ERROR [attack_vision] 文件描述符无效，尝试重新打开
+INFO  [attack_vision] 尝试打开虚拟串口: /tmp/attack_vision_tty
+INFO  [attack_vision] Virtual UART opened: /tmp/attack_vision_tty, fd=37
+INFO  [attack_vision] Virtual UART configured: baud=115200
+ERROR [attack_vision] poll error: ret=-1, errno=22: Invalid argument (count=4)
+ERROR [attack_vision] 文件描述符无效，关闭并重新打开
+ERROR [attack_vision] Task already running
+ERROR [attack_vision] 文件描述符无效，尝试重新打开
+
+
+
+如果我不运行两个python 文件，直接运行make px4_sitl_default gz_x500
+
+会出现如下信息
+pxh> INFO  [commander] Ready for takeoff!
+pxh> attack_vision start
+pxh> INFO  [attack_vision] 尝试打开虚拟串口: /tmp/attack_vision_tty
+ERROR [attack_vision] 虚拟串口设备不存在: /tmp/attack_vision_tty
+ERROR [attack_vision] UART open failed
+pxh> attack_vision start
+除了串口没打开外一切正常
+
+此时运行两个python文件，然后运行attack_vision start
+就会报如下错误
+
+ERROR [attack_vision] poll error: ret=-1, errno=2: No such file or directory (count=6)
+ERROR [attack_vision] poll error: ret=-1, errno=2: No such file or directory (count=7)
+ERROR [vehicle_magnetometer] MAG #0 failed:  TIMEOUT!	
+ERROR [attack_vision] poll error: ret=-1, errno=2: No such file or directory (count=8)
+ERROR [attack_vision] poll error: ret=-1, errno=2: No such file or directory (count=9)
+WARN  [health_and_arming_checks] Preflight Fail: No valid data from Compass 0
+ERROR [attack_vision] poll error: ret=-1, errno=2: No such file or directory (count=50)
+ERROR [vehicle_magnetometer] MAG #0 failed:  TIMEOUT!	
+ERROR [attack_vision] poll error: ret=-1, errno=2: No such file or directory (count=100)
+
+貌似gazebo打开后会和我写的这个cpp串口存在冲突。不能同时运行。
+解决这个问题。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
