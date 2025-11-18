@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <px4_platform_common/cli.h>
+#include "vserial.h"  // 添加虚拟串口头文件
 
 /**
  * @brief 构造函数
@@ -33,16 +34,28 @@
  */
 AttackVision::AttackVision()
 	: ModuleParams(nullptr)
-	, WorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
+	, WorkItem(MODULE_NAME, px4::wq_configurations::ttyS5)
 {
+    	// 在SITL模式下使用虚拟串口
+	PX4_INFO("Using virtual serial port for SITL simulation");
 }
 
 AttackVision::~AttackVision()
 {
+	close_uart();
+}
+
+void AttackVision::close_uart()
+{
+	#ifdef __PX4_POSIX
+	// 虚拟串口不需要关闭操作，只需重置文件描述符
+	_fd = -1;
+	#else
 	if (_fd >= 0) {
 		::close(_fd);
 		_fd = -1;
 	}
+	#endif
 }
 
 int AttackVision::task_spawn(int argc, char *argv[])
@@ -115,14 +128,16 @@ int AttackVision::print_status()
 	uint64_t now_us = hrt_absolute_time();
 	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
 
-	PX4_INFO("attack_vision running, fd=%d, lock=%d, pix=(%d,%d)",
-		_fd, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-	PX4_INFO("  buf_len=%d, last_frame_age=%.3f ms",
-		_buf_len, (double)(time_since_last_frame) / 1000.0);
+	PX4_INFO("Attack Vision Status:");
+	PX4_INFO("  UART: %s", (_fd >= 0) ? "OPEN" : "CLOSED");
+	PX4_INFO("  Target Lock: %s", _lock_active ? "YES" : "NO");
+	PX4_INFO("  Pixel Offset: X=%d, Y=%d", (int)_pix_offset_x, (int)_pix_offset_y);
+	PX4_INFO("  Module State: %d", (int)_module_state);
+	PX4_INFO("  Last Frame: %.3f ms ago", (double)(time_since_last_frame) / 1000.0);
 
 	// 如果长时间没有收到帧，输出警告
 	if (time_since_last_frame > 500000) {  // 500ms
-		PX4_WARN("  No frame received for %.3f ms - check data source", (double)(time_since_last_frame) / 1000.0);
+		PX4_WARN("  No frame received for %.3f ms - check virtual serial", (double)(time_since_last_frame) / 1000.0);
 	}
 
 	return 0;
@@ -162,38 +177,21 @@ bool AttackVision::configure_uart(int baudrate)
 	return true;
 }
 
-
 bool AttackVision::open_uart()
 {
 	#ifdef __PX4_POSIX
-	// SITL/Posix 下使用虚拟串口设备
-	const char *dev = "/tmp/attack_vision_tty";   // 修改这里：使用tty而不是fifo，对应virtual_uart_service
-	// const char *dev = "/tmp/attack_vision_pty";   // 修改这里：使用pty而不是fifo,对应virtual_uart_service_fixed
+	// SITL/Posix 下使用虚拟串口
+	PX4_INFO("Initializing virtual serial port for SITL simulation");
 
-	PX4_INFO("尝试打开虚拟串口: %s", dev);
-
-	// 先检查设备是否存在
-	if (access(dev, F_OK) != 0) {
-		PX4_ERR("虚拟串口设备不存在: %s", dev);
+	// 初始化虚拟串口
+	if (VSerial::get_instance().init() != 0) {
+		PX4_ERR("failed to initialize virtual serial port");
 		return false;
 	}
 
-	// 以读写模式打开虚拟串口设备
-	_fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
-	if (_fd < 0) {
-		PX4_ERR("open %s failed: %s", dev, strerror(errno));
-		return false;
-	}
-	PX4_INFO("Virtual UART opened: %s, fd=%d", dev, _fd);
-
-	// 配置串口参数（即使虚拟串口也需要配置）
-	bool ret = configure_uart(_param_av_baud.get());
-	if (ret) {
-		PX4_INFO("Virtual UART configured: baud=%d", _param_av_baud.get());
-	} else {
-		PX4_ERR("Failed to configure virtual UART");
-	}
-	return ret;
+	_fd = 1; // 虚拟文件描述符，用于标识串口已打开
+	PX4_INFO("Virtual UART port opened successfully");
+	return true;
 	#else
 	// 硬件板卡默认 TELEM2 口
 	const char *dev = "/dev/ttyS5";
@@ -203,11 +201,7 @@ bool AttackVision::open_uart()
 		return false;
 	}
 	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
-	bool ret = configure_uart(_param_av_baud.get());
-	if (ret) {
-		PX4_INFO("UART configured: baud=%d", _param_av_baud.get());
-	}
-	return ret;
+	return configure_uart(_param_av_baud.get());
 	#endif
 }
 
@@ -239,25 +233,58 @@ bool AttackVision::validate_frame(const uint8_t *frame)
  * @brief 尝试从串口读取一帧数据（适配poll模式）
  * @return true=成功读取并解析一帧，false=未完成或失败
  */
+/**
+ * @brief 尝试从串口读取一帧数据
+ * @return true=成功读取并解析一帧，false=未完成或失败
+ */
 bool AttackVision::try_read_frame()
 {
+	#ifdef __PX4_POSIX
+	// SITL模式：使用虚拟串口读取数据
+	uint8_t buffer[64];
+	int bytes_read = VSerial::get_instance().read(buffer, sizeof(buffer));
 
+	if (bytes_read == sizeof(buffer)) {
+		// 成功读取到完整帧
+		memcpy(_buf, buffer, sizeof(buffer));
+		_buf_len = sizeof(buffer);
+
+		// 校验帧格式
+		if (validate_frame(_buf)) {
+		_last_frame_time_us = hrt_absolute_time();
+		parse_frame_data();
+		_buf_len = 0;  // 重置缓冲区
+
+		// 调试信息
+		static int success_count = 0;
+		if (success_count < 10) {
+			PX4_INFO("成功解析虚拟串口帧: lock=%d, pix=(%d,%d)",
+				(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+			success_count++;
+		}
+		return true;
+		} else {
+		PX4_WARN("虚拟串口帧校验失败");
+		_buf_len = 0;
+		}
+	} else if (bytes_read > 0) {
+		PX4_DEBUG("虚拟串口读取 %d 字节，期望 %zu", bytes_read, sizeof(buffer));
+	}
+
+	return false;
+	#else
+	// 硬件模式：原有的文件描述符读取逻辑
 	if (_fd < 0) {
 		PX4_ERR("文件描述符无效: %d", _fd);
 		return false;
 	}
 
-	// 一次性读取所有可用数据，而不是逐字节读取
+	// 一次性读取所有可用数据
 	uint8_t read_buf[256];
 	ssize_t n = ::read(_fd, read_buf, sizeof(read_buf));
 
 	if (n == 0) {
 		// 没有数据可读（非阻塞模式正常）
-		static int zero_count = 0;
-		if (zero_count < 3) {
-		PX4_INFO("read返回0: 无数据可读 (非阻塞模式正常)");
-		zero_count++;
-		}
 		return false;
 	} else if (n < 0) {
 		if (errno == EAGAIN) {
@@ -269,24 +296,9 @@ bool AttackVision::try_read_frame()
 		}
 	}
 
-	// 成功读取到数据
-	static int read_count = 0;
-	if (read_count < 5) {
-		PX4_INFO("成功读取 %zd 字节", n);// 一次性读取所有可用数据，而不是逐字节读取
-		read_count++;
-	}
-
 	// 处理所有读取到的字节
 	for (ssize_t i = 0; i < n; i++) {
 		uint8_t byte = read_buf[i];
-
-		// 调试信息：显示前几个字节的内容
-		static int byte_display_count = 0;
-		if (byte_display_count < 10 && i < 5) {
-		PX4_INFO("字节[%zd]: 0x%02X", i, byte);
-		byte_display_count++;
-		}
-
 		_buf[_buf_len++] = byte;
 
 		// 检查是否收集到完整帧
@@ -295,38 +307,49 @@ bool AttackVision::try_read_frame()
 		bool ok = validate_frame(_buf);
 		if (ok) {
 			_last_frame_time_us = hrt_absolute_time();
-
-			// 解析帧数据
 			parse_frame_data();
-
-			_buf_len = 0;  // 重置缓冲区
-
-			// 调试信息
-			static int success_count = 0;
-			if (success_count < 10000) {
-			// PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
-				// (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-			success_count++;
-			}
+			_buf_len = 0;
 			return true;
 		} else {
 			// 校验失败，滑动窗口
 			memmove(_buf, _buf + 1, FRAME_LEN - 1);
 			_buf_len = FRAME_LEN - 1;
-
-			static int fail_count = 0;
-			if (fail_count < 1000) {
 			PX4_WARN("帧校验失败，滑动窗口");
-			fail_count++;
-			}
 		}
 		}
 	}
 
 	return false;
+	#endif
 }
 
 
+
+/**
+ * @brief 解析帧数据
+ */
+// void AttackVision::parse_frame_data()
+// {
+// 	// ========== 解析关键字段 ==========
+// 	// 第5-6字节：吊舱状态（UINT16，小端序）
+// 	uint16_t status_5_6 = (uint16_t)_buf[4] | ((uint16_t)_buf[5] << 8);
+// 	// 第9字节：伺服状态
+// 	uint8_t servo_state = _buf[8];
+
+// 	// 锁定状态判断：Bit9~Bit10（第5-6字节的状态字）
+// 	uint16_t lock_bits = (status_5_6 >> 9) & 0x3;
+// 	bool locking = (lock_bits == 0x1) || (lock_bits == 0x2);  // 01或10表示锁定
+// 	bool exit_lock = (lock_bits == 0x3);  // 11表示退出锁定
+
+// 	// 锁定有效条件：锁定标识有效 AND 伺服状态为跟踪模式（0x07）
+// 	_lock_active = locking && (servo_state == 0x07);
+// 	if (exit_lock) { _lock_active = false; }  // 退出锁定标志优先级更高
+
+// 	// 第59-60字节：目标脱靶量-方位方向（INT16，小端序，单位：像素）
+// 	_pix_offset_x = (int16_t)((uint16_t)_buf[58] | ((uint16_t)_buf[59] << 8));
+// 	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
+// 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
+// }
 
 /**
  * @brief 解析帧数据
@@ -339,19 +362,32 @@ void AttackVision::parse_frame_data()
 	// 第9字节：伺服状态
 	uint8_t servo_state = _buf[8];
 
-	// 锁定状态判断：Bit9~Bit10（第5-6字节的状态字）
-	uint16_t lock_bits = (status_5_6 >> 9) & 0x3;
-	bool locking = (lock_bits == 0x1) || (lock_bits == 0x2);  // 01或10表示锁定
-	bool exit_lock = (lock_bits == 0x3);  // 11表示退出锁定
+	// 调试信息：打印原始数据
+	static int debug_count = 0;
+	if (debug_count < 5) {
+		PX4_INFO("原始数据 - status_5_6: 0x%04X, servo_state: 0x%02X",
+			status_5_6, servo_state);
+		debug_count++;
+	}
+
+	// 锁定状态判断：检查第9位（从0开始计数）
+	// 在vserial.cpp中，锁定状态设置在status1的第9位
+	bool locking = (status_5_6 & (1 << 9)) != 0;
 
 	// 锁定有效条件：锁定标识有效 AND 伺服状态为跟踪模式（0x07）
 	_lock_active = locking && (servo_state == 0x07);
-	if (exit_lock) { _lock_active = false; }  // 退出锁定标志优先级更高
 
 	// 第59-60字节：目标脱靶量-方位方向（INT16，小端序，单位：像素）
 	_pix_offset_x = (int16_t)((uint16_t)_buf[58] | ((uint16_t)_buf[59] << 8));
 	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
+
+	// 调试信息
+	if (debug_count < 10) {
+		PX4_INFO("解析结果 - 锁定=%d, 脱靶量=(%d,%d), locking=%d, servo=0x%02X",
+			(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
+			(int)locking, servo_state);
+	}
 }
 
 
@@ -537,106 +573,21 @@ void AttackVision::Run()
 		return;
 	}
 
-	PX4_INFO("攻击视觉模块启动成功，使用poll模式");
-
-	// 正确初始化 pollfd 结构体
-	px4_pollfd_struct_t fds[1];
-	fds[0].fd = _fd;
-	fds[0].events = POLLIN;    // 监听可读事件
-	fds[0].revents = 0;
+	PX4_INFO("攻击视觉模块启动成功 - 使用虚拟串口");
 
 	const uint64_t frame_timeout_us = 200000;  // 200ms超时
-
-	// 主循环
 	static uint64_t last_status_time = 0;
-	static int poll_success_count = 0;
-	static int poll_error_count = 0;
+	static int frame_count = 0;
 
 	while (!should_exit()) {
-		// 检查文件描述符有效性
-		if (_fd < 0) {
-		PX4_ERR("文件描述符无效，尝试重新打开");
-		if (!open_uart()) {
-			PX4_ERR("重新打开串口失败");
-			usleep(1000000); // 等待1秒后重试
-			continue;
+		// 尝试读取并处理帧数据
+		if (try_read_frame()) {
+		// 成功读取到一帧数据
+		if (frame_count < 10) {
+			PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
+				frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+			frame_count++;
 		}
-		// 重新设置poll
-		fds[0].fd = _fd;
-		fds[0].events = POLLIN;
-		fds[0].revents = 0;
-		}
-
-		// 使用 poll 等待数据，超时时间100ms
-		int ret = px4_poll(fds, 1, 100);
-
-		if (ret < 0) {
-		// poll 错误
-		poll_error_count++;
-		if (poll_error_count < 10 || (poll_error_count % 50) == 0) {
-			PX4_ERR("poll error: ret=%d, errno=%d: %s (count=%d)",
-			ret, errno, strerror(errno), poll_error_count);
-		}
-
-		// 检查文件描述符状态
-		if (errno == EBADF || errno == EINVAL) {
-			PX4_ERR("文件描述符无效，关闭并重新打开");
-			if (_fd >= 0) {
-			::close(_fd);
-			_fd = -1;
-			}
-			fds[0].fd = -1;
-		}
-		usleep(50000); // 错误时短暂休眠
-		continue;
-
-		} else if (ret == 0) {
-		// 超时，正常情况
-		poll_success_count = 0; // 重置成功计数
-
-		} else {
-		// poll 成功，检查是否有可读数据
-		if (fds[0].revents & POLLIN) {
-			// 有数据可读
-			poll_success_count++;
-			if (poll_success_count < 5) {
-			PX4_INFO("poll检测到数据可读，revents=0x%X", fds[0].revents);
-			}
-
-			// 读取并处理所有可用帧
-			int frames_parsed = 0;
-			while (try_read_frame()) {
-			frames_parsed++;
-			}
-
-			if (frames_parsed > 0 && poll_success_count <= 5) {
-			PX4_INFO("本轮poll解析了 %d 帧", frames_parsed);
-			}
-
-		} else {
-			// 其他事件，可能是错误
-			if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			PX4_ERR("poll检测到错误事件: revents=0x%X", fds[0].revents);
-			// 处理错误，需要重新打开串口
-			if (_fd >= 0) {
-				::close(_fd);
-				_fd = -1;
-			}
-			fds[0].fd = -1;
-			}
-		}
-		}
-
-		// 状态输出（每5秒）
-		uint64_t now = hrt_absolute_time();
-		if (now - last_status_time > 5000000) {
-		uint64_t time_since_last = now - _last_frame_time_us;
-		PX4_INFO("状态: fd=%d, buf_len=%d, 最后帧 %.1f 秒前, poll错误=%d",
-			_fd, _buf_len, (double)(time_since_last) / 1000000.0, poll_error_count);
-		if (time_since_last > 1000000) {
-			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
-		}
-		last_status_time = now;
 		}
 
 		// 制导逻辑
@@ -646,14 +597,13 @@ void AttackVision::Run()
 		if (_module_state != ModuleState::OFFBOARD) {
 			if (switch_to_offboard()) {
 			_module_state = ModuleState::OFFBOARD;
-			PX4_INFO("已进入Offboard模式");
+			PX4_INFO("已进入Offboard模式 - 开始制导");
 			} else {
 			_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 			}
 		}
 
 		if (_module_state == ModuleState::OFFBOARD) {
-			PX4_INFO("执行制导控制");
 			handle_guidance();
 		}
 		} else {
@@ -663,7 +613,26 @@ void AttackVision::Run()
 			_module_state = ModuleState::HOLD;
 		}
 		}
+
+		// 状态输出（每5秒）
+		uint64_t now = hrt_absolute_time();
+		if (now - last_status_time > 5000000) {
+		uint64_t time_since_last = now - _last_frame_time_us;
+		PX4_INFO("状态: 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
+			(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
+			(double)(time_since_last) / 1000000.0);
+
+		if (time_since_last > 1000000) {
+			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
+		}
+		last_status_time = now;
+		}
+
+		// 控制循环频率
+		usleep(20000); // 50Hz
 	}
+
+	close_uart();
 	exit_and_cleanup();
 }
 

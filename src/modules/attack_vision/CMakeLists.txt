@@ -14,6 +14,7 @@ px4_add_module(
 		attack_vision_test_copy.cpp
 		attack_vision.hpp
 		attack_vision_params.c
+		vserial.cpp
 	DEPENDS
 		px4_work_queue
 )
