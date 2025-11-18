@@ -49,7 +49,7 @@ void AttackVision::close_uart()
 {
 	#ifdef __PX4_POSIX
 	// 虚拟串口不需要关闭操作，只需重置文件描述符
-	_fd = -1;
+		_fd = -1;
 	#else
 	if (_fd >= 0) {
 		::close(_fd);
@@ -411,7 +411,7 @@ bool AttackVision::switch_to_offboard()
 	PX4_INFO("准备切换到Offboard模式，先发布控制信号...");
 
 	// 发布零速度控制信号
-	publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+	// publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
 
 	// 短暂延迟确保控制信号被接收
 	usleep(100000); // 100ms
@@ -480,6 +480,7 @@ void AttackVision::switch_to_hold()
  */
 void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate)
 {
+
 	// 发布Offboard控制模式：仅使用速度控制
 	offboard_control_mode_s ocm{};
 	ocm.timestamp = hrt_absolute_time();
@@ -514,7 +515,6 @@ void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float
 	sp.velocity[0] = vx;  // North方向速度（前向）
 	sp.velocity[1] = vy;  // East方向速度（右侧）
 	sp.velocity[2] = 0.0f; // 关键：保持高度，垂直速度设为0
-	sp.yawspeed = yaw_rate;  // 偏航角速度
 
 	_traj_sp_pub.publish(sp);
 
@@ -549,10 +549,33 @@ void AttackVision::handle_guidance()
 		float vx = -math::constrain(kp * ex, -maxv, maxv);  // 前向速度（对应方位偏差）
 		float vy = -math::constrain(kp * ey, -maxv, maxv);  // 横向速度（对应俯仰偏差）
 
+		PX4_INFO("发布速度控制: vx=%.2f, vy=%.2f, vz=%.2f", (double)vx, (double)vy, (double)0.0f);
 		// 发布速度控制指令（垂直速度和偏航角速度保持为0）
-		publish_offboard_velocity(vx, vy, 0.f, 0.f);
+		publish_offboard_velocity(vx*100, vy*100, 0.0f, 0.0f);
+		// publish_offboard_velocity(0.5, 0.0, 0.0, 0.0);
 	}
 }
+
+/**
+ * @brief 打印无人机实时状态信息（位置、速度、加速度）
+ */
+void AttackVision::print_drone_status()
+{
+	vehicle_local_position_s local_pos{};
+	if (_vehicle_local_position_sub.copy(&local_pos)) {
+		PX4_INFO("=== 无人机实时状态 ===");
+		PX4_INFO("位置: X=%.2fm, Y=%.2fm, Z=%.2fm",
+				(double)local_pos.x, (double)local_pos.y, (double)local_pos.z);
+		PX4_INFO("速度: Vx=%.2fm/s, Vy=%.2fm/s, Vz=%.2fm/s",
+				(double)local_pos.vx, (double)local_pos.vy, (double)local_pos.vz);
+		PX4_INFO("加速度: Ax=%.2fm/s², Ay=%.2fm/s², Az=%.2fm/s²",
+				(double)local_pos.ax, (double)local_pos.ay, (double)local_pos.az);
+		PX4_INFO("偏航角: %.2f°", (double)(local_pos.heading * 180.0f / M_PI_F));
+	} else {
+		PX4_WARN("无法获取无人机位置信息");
+	}
+}
+
 
 // /**
 //  * @brief 主运行循环
@@ -585,6 +608,7 @@ void AttackVision::Run()
 	const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
 	static uint64_t last_status_time = 0;
 	static uint64_t last_control_time = 0;
+	static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
 	static int frame_count = 0;
 
 	while (!should_exit()) {
@@ -689,6 +713,11 @@ void AttackVision::Run()
 			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
 		}
 		last_status_time = now;
+		}
+
+		if (now - last_drone_status_time > 200000) {
+			print_drone_status();
+			last_drone_status_time = now;
 		}
 
 		// 控制循环频率

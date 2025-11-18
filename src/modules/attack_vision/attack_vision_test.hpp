@@ -24,6 +24,7 @@
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/vehicle_command.h>
+#include <uORB/topics/vehicle_local_position.h>
 
 #include <termios.h>
 #include <poll.h>
@@ -89,12 +90,14 @@ private:
 	void switch_to_hold();  ///< 切换到悬停模式（Loiter）
 	void parse_frame_data();
 	void close_uart();
+	void print_drone_status();
 
 	// ========== uORB话题订阅和发布 ==========
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};  ///< 订阅载具状态
 	uORB::Publication<offboard_control_mode_s> _offboard_ctrl_pub{ORB_ID(offboard_control_mode)};  ///< 发布Offboard控制模式
 	uORB::Publication<trajectory_setpoint_s> _traj_sp_pub{ORB_ID(trajectory_setpoint)};  ///< 发布轨迹设定点（速度指令）
 	uORB::Publication<vehicle_command_s> _vehicle_cmd_pub{ORB_ID(vehicle_command)};  ///< 发布载具命令（模式切换等）
+	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};  ///< 订阅载具位置
 
 	// ========== 模块参数 ==========
 	DEFINE_PARAMETERS(
