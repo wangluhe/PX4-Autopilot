@@ -239,13 +239,25 @@ void VSerial::generate_sim_data()
 	static SimPodData sim_data{};
 	static uint32_t frame_counter = 0;
 	static bool target_locked = true;
+	static int lock_duration = 0;
 
 	frame_counter++;
 
 	// 模拟目标锁定状态切换（每100帧切换一次）
-	if (frame_counter % 500 == 0) {
-		target_locked = !target_locked;
-		PX4_INFO("Simulation: Target %s", target_locked ? "LOCKED" : "LOST");
+	if (target_locked) {
+		lock_duration++;
+		// 锁定至少持续5秒（125帧）后才可能切换
+		if (lock_duration > 125 && (frame_counter % 100 == 0)) {
+		target_locked = false;
+		lock_duration = 0;
+		PX4_INFO("Simulation: Target LOST");
+		}
+	} else {
+		// 失锁后较快恢复锁定（2秒后）
+		if (frame_counter % 50 == 0) {
+		target_locked = true;
+		PX4_INFO("Simulation: Target LOCKED");
+		}
 	}
 
 	// 填充数据包
