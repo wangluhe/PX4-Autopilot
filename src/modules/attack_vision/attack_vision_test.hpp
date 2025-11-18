@@ -87,6 +87,7 @@ private:
 	bool switch_to_offboard();  ///< 切换到Offboard模式（如果尚未切换）
 	void switch_to_hold();  ///< 切换到悬停模式（Loiter）
 	void parse_frame_data();
+	void close_uart();
 
 	// ========== uORB话题订阅和发布 ==========
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};  ///< 订阅载具状态

@@ -1,12 +1,12 @@
 menuconfig MODULES_ATTACK_VISION
 	bool "attack_vision"
-	default y
+	default n
 	---help---
 		Enable image terminal guidance (attack_vision) module
 
 menuconfig USER_ATTACK_VISION
 	bool "attack_vision running as userspace module"
-	default y
+	default n
 	depends on BOARD_PROTECTED && MODULES_ATTACK_VISION
 	---help---
 		Put attack_vision in userspace memory
