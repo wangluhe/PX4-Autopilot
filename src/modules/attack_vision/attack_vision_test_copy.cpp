@@ -128,26 +128,27 @@ int AttackVision::print_status()
 	uint64_t now_us = hrt_absolute_time();
 	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
 
-	PX4_INFO("Attack Vision Status:");
-	PX4_INFO("  UART: %s", (_fd >= 0) ? "OPEN" : "CLOSED");
-	PX4_INFO("  Target Lock: %s", _lock_active ? "YES" : "NO");
-	PX4_INFO("  Pixel Offset: X=%d, Y=%d", (int)_pix_offset_x, (int)_pix_offset_y);
-	PX4_INFO("  Module State: %d", (int)_module_state);
-	PX4_INFO("  Last Frame: %.3f ms ago", (double)(time_since_last_frame) / 1000.0);
+	vehicle_status_s vs{};
+	bool has_status = _vehicle_status_sub.copy(&vs);
 
-	// 如果长时间没有收到帧，输出警告
-	if (time_since_last_frame > 500000) {  // 500ms
-		PX4_WARN("  No frame received for %.3f ms - check virtual serial", (double)(time_since_last_frame) / 1000.0);
-	}
+	PX4_INFO("=== Attack Vision Status ===");
+	PX4_INFO("UART: %s", (_fd >= 0) ? "OPEN" : "CLOSED");
+	PX4_INFO("Target Lock: %s", _lock_active ? "YES" : "NO");
+	PX4_INFO("Pixel Offset: X=%d, Y=%d", (int)_pix_offset_x, (int)_pix_offset_y);
 
-	// 在print_status函数中添加
 	const char* state_str = "UNKNOWN";
 	switch (_module_state) {
 	case ModuleState::HOLD: state_str = "HOLD"; break;
 	case ModuleState::SWITCHING_TO_OFFBOARD: state_str = "SWITCHING_TO_OFFBOARD"; break;
 	case ModuleState::OFFBOARD: state_str = "OFFBOARD"; break;
 	}
-	PX4_INFO("  Module State: %s", state_str);
+	PX4_INFO("Module State: %s", state_str);
+
+	if (has_status) {
+		PX4_INFO("Vehicle: nav_state=%d, arming_state=%d", vs.nav_state, vs.arming_state);
+	}
+
+	PX4_INFO("Last Frame: %.3f ms ago", (double)(time_since_last_frame) / 1000.0);
 
 	return 0;
 }
@@ -332,8 +333,6 @@ bool AttackVision::try_read_frame()
 	#endif
 }
 
-
-
 /**
  * @brief 解析帧数据
  */
@@ -408,11 +407,20 @@ bool AttackVision::switch_to_offboard()
 		return false;
 	}
 
-	// 使用标准的MAVLink模式切换命令
+	// 关键修复：先持续发布控制信号，然后再发送模式切换命令
+	PX4_INFO("准备切换到Offboard模式，先发布控制信号...");
+
+	// 发布零速度控制信号
+	publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+
+	// 短暂延迟确保控制信号被接收
+	usleep(100000); // 100ms
+
+	// 发送模式切换命令
 	vehicle_command_s cmd{};
 	cmd.timestamp = now;
-	cmd.param1 = 1.0f;  // 主模式
-	cmd.param2 = 6.0f;  // PX4_CUSTOM_MAIN_MODE_OFFBOARD
+	cmd.param1 = (float)1;  // 主模式
+	cmd.param2 = (float)6;  // PX4_CUSTOM_MAIN_MODE_OFFBOARD
 	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
 	cmd.target_system = 1;
 	cmd.target_component = 1;
@@ -445,7 +453,7 @@ void AttackVision::switch_to_hold()
 	vehicle_command_s cmd{};
 	cmd.timestamp = now;
 	cmd.param1 = (float)1;      // 主模式
-	cmd.param2 = (float)5;      // PX4_CUSTOM_MAIN_MODE_AUTO
+	cmd.param2 = (float)4;      // PX4_CUSTOM_MAIN_MODE_AUTO
 	cmd.param3 = (float)3;      // PX4_CUSTOM_SUB_MODE_AUTO_LOITER
 	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
 	cmd.target_system = 1;
@@ -501,13 +509,16 @@ void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float
 	sp.yaw = NAN;
 	sp.yawspeed = NAN;
 
-	// 设置速度控制（NED坐标系：velocity[0]=North, velocity[1]=East, velocity[2]=Down）
+	// 关键修复：设置速度控制（NED坐标系）
+	// 注意：NED坐标系中，向下为正，所以要保持高度需要 velocity[2] = 0
 	sp.velocity[0] = vx;  // North方向速度（前向）
 	sp.velocity[1] = vy;  // East方向速度（右侧）
-	sp.velocity[2] = -vz; // Down方向速度（向下为正，所以取负）
+	sp.velocity[2] = 0.0f; // 关键：保持高度，垂直速度设为0
 	sp.yawspeed = yaw_rate;  // 偏航角速度
 
 	_traj_sp_pub.publish(sp);
+
+	PX4_DEBUG("发布速度控制: vx=%.2f, vy=%.2f, vz=%.2f", (double)vx, (double)vy, (double)0.0f);
 }
 
 /**
@@ -571,10 +582,13 @@ void AttackVision::Run()
 	PX4_INFO("攻击视觉模块启动成功 - 使用虚拟串口");
 
 	const uint64_t frame_timeout_us = 200000;  // 200ms超时
+	const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
 	static uint64_t last_status_time = 0;
+	static uint64_t last_control_time = 0;
 	static int frame_count = 0;
 
 	while (!should_exit()) {
+		// 尝试读取并处理帧数据
 		if (try_read_frame()) {
 		// 成功读取到一帧数据
 		if (frame_count < 10) {
@@ -583,12 +597,17 @@ void AttackVision::Run()
 			frame_count++;
 		}
 		}
+
 		// 获取vehicle_status
 		vehicle_status_s vehicle_status{};
 		bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
 
 		// 制导逻辑
 		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
+
+		// 关键修改：在Offboard模式下必须持续发布控制信号
+		uint64_t now = hrt_absolute_time();
+		bool need_control_publish = (now - last_control_time > control_timeout_us);
 
 		if (_lock_active && frame_valid_recent && has_vehicle_status) {
 			if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
@@ -599,24 +618,40 @@ void AttackVision::Run()
 					PX4_INFO("已进入Offboard模式 - 开始制导");
 					_module_state = ModuleState::OFFBOARD;
 				}
-				handle_guidance();
+
+				// 关键：在Offboard模式下必须持续发布控制信号
+				if (need_control_publish) {
+					handle_guidance();
+					last_control_time = now;
+				}
 				} else {
 				// 不在Offboard模式，尝试切换
 				if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
 					PX4_INFO("尝试切换到Offboard模式");
 					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 
-					// 关键：在切换模式前先发布一次控制信号
+					_switch_start_time = now;
+					// 关键：在切换模式前先发布控制信号
 					PX4_INFO("先发布零速度控制信号以满足PX4要求");
 					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+					last_control_time = now;
+				}
+
+				// 在切换过程中也要持续发布控制信号
+				if (need_control_publish) {
+					PX4_INFO("need_control_publish123456789987456123");
+					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+					last_control_time = now;
 				}
 
 				// 短暂延迟后发送模式切换命令
-				_switch_start_time = hrt_absolute_time();
-
-				// 等待100ms确保控制信号已被接收
-				if (hrt_absolute_time() - _switch_start_time > 100000) {
+				if (now - _switch_start_time > 100000) { // 100ms
+					PX4_INFO("等待时间已到，发送Offboard模式切换命令");
+					// PX4_INFO("123456789987456123");
 					switch_to_offboard();
+
+					// 可选：重置开始时间以避免重复发送
+					// _switch_start_time = now + 1000000; // 1秒内不再重复发送
 				}
 				}
 			} else {
@@ -624,6 +659,8 @@ void AttackVision::Run()
 				if (_module_state != ModuleState::HOLD) {
 				_module_state = ModuleState::HOLD;
 				}
+				// 重置切换计时器
+				_switch_start_time = 0;
 			}
 		} else {
 		// 失锁或数据超时
@@ -637,7 +674,6 @@ void AttackVision::Run()
 		}
 
 		// 状态输出（每5秒）
-		uint64_t now = hrt_absolute_time();
 		if (now - last_status_time > 5000000) {
 		uint64_t time_since_last = now - _last_frame_time_us;
 		PX4_INFO("状态: 模块状态=%d, 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
