@@ -238,12 +238,12 @@ void VSerial::generate_sim_data()
 
 	static SimPodData sim_data{};
 	static uint32_t frame_counter = 0;
-	static bool target_locked = false;
+	static bool target_locked = true;
 
 	frame_counter++;
 
 	// 模拟目标锁定状态切换（每100帧切换一次）
-	if (frame_counter % 100 == 0) {
+	if (frame_counter % 500 == 0) {
 		target_locked = !target_locked;
 		PX4_INFO("Simulation: Target %s", target_locked ? "LOCKED" : "LOST");
 	}
@@ -279,9 +279,11 @@ void VSerial::generate_sim_data()
 	// 模拟脱靶量 - 在锁定状态下产生小的脱靶量
 	if (target_locked) {
 		// 产生正弦波形的脱靶量，模拟目标移动
-		float time_sec = now / 1e6f;
-		sim_data.off_target_azimuth = static_cast<int16_t>(50.0f * sinf(time_sec * 2.0f));
-		sim_data.off_target_elevation = static_cast<int16_t>(30.0f * sinf(time_sec * 1.5f));
+		// float time_sec = now / 1e6f;
+		// sim_data.off_target_azimuth = static_cast<int16_t>(50.0f * sinf(time_sec * 2.0f));
+		// sim_data.off_target_elevation = static_cast<int16_t>(30.0f * sinf(time_sec * 1.5f));
+		sim_data.off_target_azimuth = static_cast<int16_t>(50.0f);
+		sim_data.off_target_elevation = static_cast<int16_t>(30.0f);
 	} else {
 		sim_data.off_target_azimuth = 0;
 		sim_data.off_target_elevation = 0;

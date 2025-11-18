@@ -80,6 +80,7 @@ private:
 	ModuleState _module_state{ModuleState::HOLD};  ///< 当前模块状态
 
 	// ========== 控制逻辑相关 ==========
+	hrt_abstime _switch_start_time{0};  ///< 模式切换开始时间戳
 	hrt_abstime _last_cmd_publish_time{0};  ///< 上次命令发布的时间戳（用于频率限制）
 	static constexpr uint64_t MIN_CMD_INTERVAL_US = 500000;  ///< 命令发布最小间隔（500ms）
 	void handle_guidance();  ///< 处理制导逻辑：根据像素偏差计算速度指令
