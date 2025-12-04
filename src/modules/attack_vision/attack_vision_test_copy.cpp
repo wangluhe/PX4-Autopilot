@@ -68,11 +68,17 @@ void AttackVision::close_uart()
 
 int AttackVision::task_spawn(int argc, char *argv[])
 {
+	PX4_INFO("=== Attack Vision task_spawn called ===");
+
 	AttackVision *instance = new AttackVision();
 	if (instance) {
 		_object.store(instance);
 		_task_id = task_id_is_work_queue;
+
+		PX4_INFO("Scheduling AttackVision to work queue...");
 		instance->ScheduleNow();
+
+		PX4_INFO("AttackVision scheduled successfully");
 		return PX4_OK;
 	}
 	PX4_ERR("alloc failed");
@@ -213,14 +219,28 @@ bool AttackVision::open_uart()
 	#else
 	// 硬件板卡默认 TELEM2 口
 	const char *dev = "/dev/ttyS5";
+
+	PX4_INFO("Attempting to open hardware UART: %s", dev);
+
 	_fd = ::open(dev, O_RDWR | O_NOCTTY);
 	if (_fd < 0) {
-		PX4_ERR("open %s failed", dev);
+		PX4_ERR("Failed to open %s: %s (errno=%d)", dev, strerror(errno), errno);
 		return false;
 	}
-	PX4_INFO("UART opened: %s, fd=%d", dev, _fd);
-	PX4_INFO("Hardware UART opened: %s, fd=%d", dev, _fd);
-	return configure_uart(_param_av_baud.get());
+
+	PX4_INFO("Hardware UART opened successfully: %s, fd=%d", dev, _fd);
+
+	// 配置串口
+	if (!configure_uart(_param_av_baud.get())) {
+		PX4_ERR("Failed to configure UART parameters");
+		::close(_fd);
+		_fd = -1;
+		return false;
+	}
+
+	// 修复格式符问题
+	PX4_INFO("UART configured with baudrate: %ld", _param_av_baud.get());
+	return true;
 	#endif
 }
 
@@ -347,6 +367,20 @@ bool AttackVision::try_read_frame()
  */
 void AttackVision::parse_frame_data()
 {
+	// ========== 调试输出：打印完整帧数据 ==========
+	static int debug_frame_count = 0;
+	if (debug_frame_count < 1000) {
+		PX4_INFO("完整帧数据 (长度 %d 字节):", FRAME_LEN);
+		for (int i = 0; i < FRAME_LEN; i++) {
+			if (i % 16 == 0) {
+			PX4_INFO("");  // 新行
+			}
+			PX4_INFO_RAW(" %02X", _buf[i]);  // 使用 PX4_INFO_RAW
+		}
+		PX4_INFO("");
+		debug_frame_count++;
+	}
+
 	// ========== 解析关键字段 ==========
 	// 第5-6字节：吊舱状态（UINT16，小端序）
 	uint16_t status_5_6 = (uint16_t)_buf[4] | ((uint16_t)_buf[5] << 8);
@@ -354,18 +388,63 @@ void AttackVision::parse_frame_data()
 	uint8_t servo_state = _buf[8];
 
 	// 调试信息：打印原始数据
-	// static int debug_count = 0;
-	// if (debug_count < 5) {
-	// 	PX4_INFO("原始数据 - status_5_6: 0x%04X, servo_state: 0x%02X",
-	// 		status_5_6, servo_state);
-	// 	debug_count++;
-	// }
+	PX4_INFO("原始锁定数据-status_5_6:");
+	PX4_INFO("0x%04X(字节[4]=0x%02X,字节[5]=0x%02X), servo_state: 0x%02X",
+		status_5_6, _buf[4], _buf[5], servo_state);
 
-	// 锁定状态判断：检查第9位（从0开始计数）
-	// 在vserial.cpp中，锁定状态设置在status1的第9位
-	bool locking = (status_5_6 & (1 << 9)) != 0;
+	// 详细解析状态字节的每一位
+	PX4_INFO("状态字节分析:");
+	for (int bit = 0; bit < 16; bit++) {
+		if (status_5_6 & (1 << bit)) {
+		PX4_INFO("  Bit%d: 1", bit);
+		}
+	}
 
-	// 锁定有效条件：锁定标识有效 AND 伺服状态为跟踪模式（0x07）
+	// 特别注意Bit9和Bit10（协议中的锁定状态位）
+	bool bit9 = (status_5_6 & (1 << 9)) != 0;
+	bool bit10 = (status_5_6 & (1 << 10)) != 0;
+	PX4_INFO("锁定状态位: Bit9=%d, Bit10=%d", (int)bit9, (int)bit10);
+
+	// 根据协议第14页，Bit9~Bit10表示目标锁定标识位：
+	// 00: 默认（无效）
+	// 01: 锁定中
+	// 10: 锁定预测
+	// 11: 退出锁定
+	int lock_state = ((bit10 ? 1 : 0) << 1) | (bit9 ? 1 : 0);
+	const char* lock_state_str = "";
+	switch (lock_state) {
+		case 0: lock_state_str = "00-默认(无效)"; break;
+		case 1: lock_state_str = "01-锁定中"; break;
+		case 2: lock_state_str = "10-锁定预测"; break;
+		case 3: lock_state_str = "11-退出锁定"; break;
+	}
+	PX4_INFO("锁定标识位组合: %s", lock_state_str);
+
+	// 锁定有效条件：锁定标识位为01（锁定中）且伺服状态为跟踪模式（0x07）
+	// bool locking = (lock_state == 1);  // 01状态表示锁定中
+	bool locking = (lock_state == 1) || (lock_state == 2);  // 01(锁定中) 或 10(锁定预测)
+
+	// 调试输出伺服状态
+	const char* servo_state_str = "";
+	switch (servo_state) {
+		case 0x01: servo_state_str = "载荷关"; break;
+		case 0x02: servo_state_str = "手动"; break;
+		case 0x03: servo_state_str = "收藏"; break;
+		case 0x04: servo_state_str = "数引"; break;
+		case 0x05: servo_state_str = "航向锁定"; break;
+		case 0x06: servo_state_str = "扫描"; break;
+		case 0x07: servo_state_str = "跟踪"; break;
+		case 0x08: servo_state_str = "垂直下视"; break;
+		case 0x09: servo_state_str = "陀螺自动较漂"; break;
+		case 0x0A: servo_state_str = "陀螺温度较漂"; break;
+		case 0x0B: servo_state_str = "航向随动"; break;
+		case 0x0C: servo_state_str = "归中"; break;
+		case 0x0D: servo_state_str = "手动陀螺较漂"; break;
+		case 0x0E: servo_state_str = "姿态指引"; break;
+		default: servo_state_str = "未知"; break;
+	}
+	PX4_INFO("伺服状态: 0x%02X (%s)", servo_state, servo_state_str);
+
 	_lock_active = locking && (servo_state == 0x07);
 
 	// 第59-60字节：目标脱靶量-方位方向（INT16，小端序，单位：像素）
@@ -373,13 +452,16 @@ void AttackVision::parse_frame_data()
 	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
 
-	// 调试信息
-	// if (debug_count < 10) {
-		// PX4_INFO("解析结果 - 锁定=%d, 脱靶量=(%d,%d), locking=%d, servo=0x%02X",
-		// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
-		// 	(int)locking, servo_state);
-	// }
+	// 调试输出脱靶量
+	PX4_INFO("脱靶量原始字节:[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
+		_buf[58], _buf[59], _buf[60], _buf[61]);
+
+	PX4_INFO("解析结果 - 锁定=%d, 脱靶量=(%d,%d), locking=%d, servo=0x%02X(%s)",
+		(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
+		(int)locking, servo_state, servo_state_str);
+	PX4_INFO("=========================================");
 }
+
 
 
 /**
@@ -626,12 +708,21 @@ void AttackVision::print_drone_status()
 //  */
 void AttackVision::Run()
 {
+	PX4_INFO("=== Attack Vision Run() Started ===");
 	// 检查模块使能开关
+
+	if (_param_av_en.get() == 0) {
+		PX4_INFO("Module disabled (AAATTKVIS_EN=0)");
+		return; // 若未启用，直接退出循环
+	}
+
 	if (_param_av_en.get() <= 0) {
 		PX4_WARN("AAATTKVIS_EN disabled");
 		exit_and_cleanup();
 		return;
 	}
+
+	PX4_INFO("Attack Vision module starting...");
 
 	// 打开串口
 	if (!open_uart()) {
@@ -640,28 +731,37 @@ void AttackVision::Run()
 		return;
 	}
 
-	#ifdef __PX4_POSIX
-		PX4_INFO("攻击视觉模块启动成功 - 使用虚拟串口");
-	#else
-		PX4_INFO("攻击视觉模块启动成功 - 使用硬件串口 /dev/ttyS5");
-	#endif
+	// 确认串口状态
+	if (_fd >= 0) {
+		PX4_INFO("Attack Vision module started successfully - Using %s",
+			#ifdef __PX4_POSIX
+					"virtual serial port"
+			#else
+					"hardware UART /dev/ttyS5"
+			#endif
+					);
+	} else {
+		PX4_ERR("UART file descriptor invalid after open");
+		exit_and_cleanup();
+		return;
+	}
 
 	const uint64_t frame_timeout_us = 200000;  // 200ms超时
 	const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
 	static uint64_t last_status_time = 0;
 	static uint64_t last_control_time = 0;
 	static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
-	// static int frame_count = 0;
+	static int frame_count = 0;
 
 	while (!should_exit()) {
 		// 尝试读取并处理帧数据
 		if (try_read_frame()) {
 		// 成功读取到一帧数据
-		// if (frame_count < 10) {
-		// 	PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
-		// 	frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-		// 	frame_count++;
-		// }
+		if (frame_count < 10) {
+			PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
+			frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+			frame_count++;
+		}
 		}
 
 		// 获取vehicle_status
@@ -702,18 +802,7 @@ void AttackVision::Run()
 						publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
 						last_control_time = now;
 					}
-					// 在切换过程中也要持续发布控制信号
-					// if (need_control_publish) {
-					// 	// PX4_INFO("need_control_publish123456789987456123");
-					// 	publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-					// 	last_control_time = now;
-					// }
-
-					// 短暂延迟后发送模式切换命令
-					// if (now - _switch_start_time > 100000) { // 100ms
-					// 	PX4_INFO("等待时间已到，发送Offboard模式切换命令");
 						switch_to_offboard();
-					// }
 				}
 			} else {
 				PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
