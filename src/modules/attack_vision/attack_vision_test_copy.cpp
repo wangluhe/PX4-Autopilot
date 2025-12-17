@@ -369,7 +369,7 @@ void AttackVision::parse_frame_data()
 {
 	// ========== 调试输出：打印完整帧数据 ==========
 	static int debug_frame_count = 0;
-	if (debug_frame_count < 1000) {
+	if (debug_frame_count < 10) {
 		PX4_INFO("完整帧数据 (长度 %d 字节):", FRAME_LEN);
 		for (int i = 0; i < FRAME_LEN; i++) {
 			if (i % 16 == 0) {
@@ -388,22 +388,22 @@ void AttackVision::parse_frame_data()
 	uint8_t servo_state = _buf[8];
 
 	// 调试信息：打印原始数据
-	PX4_INFO("原始锁定数据-status_5_6:");
-	PX4_INFO("0x%04X(字节[4]=0x%02X,字节[5]=0x%02X), servo_state: 0x%02X",
-		status_5_6, _buf[4], _buf[5], servo_state);
+	// PX4_INFO("原始锁定数据-status_5_6:");
+	// PX4_INFO("0x%04X(字节[4]=0x%02X,字节[5]=0x%02X), servo_state: 0x%02X",
+	// 	status_5_6, _buf[4], _buf[5], servo_state);
 
 	// 详细解析状态字节的每一位
-	PX4_INFO("状态字节分析:");
-	for (int bit = 0; bit < 16; bit++) {
-		if (status_5_6 & (1 << bit)) {
-		PX4_INFO("  Bit%d: 1", bit);
-		}
-	}
+	// PX4_INFO("状态字节分析:");
+	// for (int bit = 0; bit < 16; bit++) {
+	// 	if (status_5_6 & (1 << bit)) {
+	// 	PX4_INFO("  Bit%d: 1", bit);
+	// 	}
+	// }
 
 	// 特别注意Bit9和Bit10（协议中的锁定状态位）
 	bool bit9 = (status_5_6 & (1 << 9)) != 0;
 	bool bit10 = (status_5_6 & (1 << 10)) != 0;
-	PX4_INFO("锁定状态位: Bit9=%d, Bit10=%d", (int)bit9, (int)bit10);
+	// PX4_INFO("锁定状态位: Bit9=%d, Bit10=%d", (int)bit9, (int)bit10);
 
 	// 根据协议第14页，Bit9~Bit10表示目标锁定标识位：
 	// 00: 默认（无效）
@@ -418,7 +418,7 @@ void AttackVision::parse_frame_data()
 		case 2: lock_state_str = "10-锁定预测"; break;
 		case 3: lock_state_str = "11-退出锁定"; break;
 	}
-	PX4_INFO("锁定标识位组合: %s", lock_state_str);
+	PX4_INFO("锁定标识: %s", lock_state_str);
 
 	// 锁定有效条件：锁定标识位为01（锁定中）且伺服状态为跟踪模式（0x07）
 	// bool locking = (lock_state == 1);  // 01状态表示锁定中
@@ -453,12 +453,12 @@ void AttackVision::parse_frame_data()
 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
 
 	// 调试输出脱靶量
-	PX4_INFO("脱靶量原始字节:[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
+	PX4_INFO("[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
 		_buf[58], _buf[59], _buf[60], _buf[61]);
 
-	PX4_INFO("解析结果 - 锁定=%d, 脱靶量=(%d,%d), locking=%d, servo=0x%02X(%s)",
-		(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
-		(int)locking, servo_state, servo_state_str);
+	// PX4_INFO("解析结果 - 锁定=%d, 脱靶量=(%d,%d), locking=%d, servo=0x%02X(%s)",
+	// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
+	// 	(int)locking, servo_state, servo_state_str);
 	PX4_INFO("=========================================");
 }
 
@@ -826,9 +826,9 @@ void AttackVision::Run()
 		// 状态输出（每5秒）
 		if (now - last_status_time > 5000000) {
 		uint64_t time_since_last = now - _last_frame_time_us;
-		PX4_INFO("状态: 模块状态=%d, 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
-			(int)_module_state, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
-			(double)(time_since_last) / 1000000.0);
+		// PX4_INFO("状态: 模块状态=%d, 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
+		// 	(int)_module_state, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
+		// 	(double)(time_since_last) / 1000000.0);
 
 		if (has_vehicle_status) {
 			PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d",
@@ -841,7 +841,7 @@ void AttackVision::Run()
 		last_status_time = now;
 		}
 
-		if (now - last_drone_status_time > 200000) {
+		if (now - last_drone_status_time > 1000000) {
 			print_drone_status();
 			last_drone_status_time = now;
 		}
