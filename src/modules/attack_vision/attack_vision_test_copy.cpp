@@ -643,7 +643,6 @@ void AttackVision::handle_guidance()
 	const float kp = _param_av_kp.get();      // 速度控制增益（m/s每像素）
 	const float dead = _param_av_dead.get();  // 像素死区
 	const float maxv = _param_av_max_v.get(); // 最大速度限制
-	// const float _forward_velocity = _param_av_forward_v.get();
 
 	float ex = (float)_pix_offset_x;  // 方位方向像素偏差 -> 控制横向
 	float ey = (float)_pix_offset_y;  // 俯仰方向像素偏差 -> 控制垂直
@@ -653,26 +652,34 @@ void AttackVision::handle_guidance()
 		if (fabsf(ex) < dead) ex = 0.f;
 		if (fabsf(ey) < dead) ey = 0.f;
 
-		// 新的控制策略：
-		// vx = 恒定前向速度（靠近目标）
-		// vy = -KP * ex（方向偏差控制横向速度）
-		// vz = -KP * ey（俯仰偏差控制垂直速度）
-		// yaw_rate = 0（保持航向）
+		// 计算机体系速度（你的逻辑）
+		float vx_body = _forward_velocity;  // 机头方向
+		float vy_body = -math::constrain(kp * ex, -maxv, maxv);  // 右侧方向
+		float vz_body = -math::constrain(kp * ey, -maxv, maxv);  // 向下方向
 
-		float vx = _forward_velocity;  // 恒定前向速度
-		float vy = -math::constrain(kp * ex, -maxv, maxv);  // 横向速度（对应方向偏差）
-		float vz = -math::constrain(kp * ey, -maxv, maxv);  // 垂直速度（对应俯仰偏差）
+		// 获取当前偏航角（航向）
+		vehicle_local_position_s local_pos{};
+		if (_vehicle_local_position_sub.copy(&local_pos)) {
+		float yaw = local_pos.heading; // 当前偏航角（弧度）
 
-		// 注意：NED坐标系中，向下为正，所以：
-		// - 如果目标在图像上方（ey为正），需要向上飞（vz为负）
-		// - 如果目标在图像下方（ey为负），需要向下飞（vz为正）
-		// 当前公式 vz = -kp * ey 符合这个逻辑
+		// 将机体系速度转换为NED坐标系速度
+		// v_north = vx_body * cos(yaw) - vy_body * sin(yaw)
+		// v_east  = vx_body * sin(yaw) + vy_body * cos(yaw)
+		float v_north = vx_body * cosf(yaw) - vy_body * sinf(yaw);
+		float v_east  = vx_body * sinf(yaw) + vy_body * cosf(yaw);
 
-		PX4_INFO("新控制策略 - 前向:%.2f, 横向:%.2f, 垂直:%.2f, 偏差(x:%d,y:%d)",
-				(double)vx, (double)vy, (double)vz, (int)_pix_offset_x, (int)_pix_offset_y);
+		// 第671-675行修改为：
+		PX4_INFO("机体系->NED转换: 偏航=%.1f°, 机体系(%.2f,%.2f,%.2f) -> NED(%.2f,%.2f,%.2f)",
+		(double)(yaw * 180.0f / M_PI_F),
+		(double)vx_body, (double)vy_body, (double)vz_body,
+		(double)v_north, (double)v_east, (double)vz_body);
 
-		// 发布速度控制指令
-		publish_offboard_velocity(vx, vy, vz, 0.0f);
+		// 发布NED坐标系速度
+		publish_offboard_velocity(v_north, v_east, vz_body, 0.0f);
+		} else {
+		PX4_WARN("无法获取偏航角，使用默认北向");
+		publish_offboard_velocity(vx_body, 0.0f, 0.0f, 0.0f);
+		}
 	}
 }
 
@@ -845,6 +852,11 @@ void AttackVision::Run()
 			print_drone_status();
 			last_drone_status_time = now;
 		}
+
+		// // 在handle_guidance调用后添加
+		// PX4_INFO("控制指令 - 机体系: (%.2f, %.2f, %.2f) -> NED: (%.2f, %.2f, %.2f)",
+		// 	(double)vx_body, (double)vy_body, (double)vz_body,
+		// 	(double)v_north, (double)v_east, (double)vz_body);
 
 		// 控制循环频率
 		usleep(20000); // 50Hz
