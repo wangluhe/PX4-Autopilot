@@ -15,6 +15,8 @@
  * - 参数开关控制（AV_EN）
  */
 
+// 图像末制导，进入后无遥控器接管。
+// 需要优化
 #include "attack_vision_test.hpp"
 
 #include <px4_platform_common/getopt.h>
