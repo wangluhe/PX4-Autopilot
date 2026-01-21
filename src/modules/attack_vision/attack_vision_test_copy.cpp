@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <px4_platform_common/cli.h>
 #include "vserial.h"  // 添加虚拟串口头文件
+#include <commander/px4_custom_mode.h>
 
 /**
  * @brief 构造函数
@@ -296,13 +297,6 @@ bool AttackVision::try_read_frame()
 		parse_frame_data();
 		_buf_len = 0;  // 重置缓冲区
 
-		// 调试信息
-		// static int success_count = 0;
-		// if (success_count < 10) {
-		// 	PX4_INFO("成功解析虚拟串口帧: lock=%d, pix=(%d,%d)",
-		// 		(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-		// 	success_count++;
-		// }
 		return true;
 		} else {
 		PX4_WARN("虚拟串口帧校验失败");
@@ -371,7 +365,7 @@ void AttackVision::parse_frame_data()
 {
 	// ========== 调试输出：打印完整帧数据 ==========
 	static int debug_frame_count = 0;
-	if (debug_frame_count < 10) {
+	if (debug_frame_count < 5) {
 		PX4_INFO("完整帧数据 (长度 %d 字节):", FRAME_LEN);
 		for (int i = 0; i < FRAME_LEN; i++) {
 			if (i % 16 == 0) {
@@ -388,19 +382,6 @@ void AttackVision::parse_frame_data()
 	uint16_t status_5_6 = (uint16_t)_buf[4] | ((uint16_t)_buf[5] << 8);
 	// 第9字节：伺服状态
 	uint8_t servo_state = _buf[8];
-
-	// 调试信息：打印原始数据
-	// PX4_INFO("原始锁定数据-status_5_6:");
-	// PX4_INFO("0x%04X(字节[4]=0x%02X,字节[5]=0x%02X), servo_state: 0x%02X",
-	// 	status_5_6, _buf[4], _buf[5], servo_state);
-
-	// 详细解析状态字节的每一位
-	// PX4_INFO("状态字节分析:");
-	// for (int bit = 0; bit < 16; bit++) {
-	// 	if (status_5_6 & (1 << bit)) {
-	// 	PX4_INFO("  Bit%d: 1", bit);
-	// 	}
-	// }
 
 	// 特别注意Bit9和Bit10（协议中的锁定状态位）
 	bool bit9 = (status_5_6 & (1 << 9)) != 0;
@@ -474,6 +455,12 @@ void AttackVision::parse_frame_data()
  */
 bool AttackVision::switch_to_offboard()
 {
+	// 增加RC授权检查：仅当RC在Offboard档位时才切换
+	if (_current_rc_mode != RCMode::MODE_OFFBOARD) {
+		PX4_WARN("RC not in Offboard mode, skip switch");
+		return false;
+	}
+
 	vehicle_status_s vs{};
 	if (!_vehicle_status_sub.copy(&vs)) {
 		PX4_WARN("无法获取vehicle_status");
@@ -500,11 +487,7 @@ bool AttackVision::switch_to_offboard()
 		return false;
 	}
 
-	// 关键修复：先持续发布控制信号，然后再发送模式切换命令
-	PX4_INFO("准备切换到Offboard模式，先发布控制信号...");
-
-	// 发布零速度控制信号
-	// publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+	PX4_INFO("准备切换到Offboard模式（RC授权），先发布控制信号...");
 
 	// 短暂延迟确保控制信号被接收
 	usleep(100000); // 100ms
@@ -529,6 +512,94 @@ bool AttackVision::switch_to_offboard()
 	return false;
 }
 
+// 新增：解析RC通道的PWM值，判断当前模式档位
+AttackVision::RCMode AttackVision::parse_rc_mode()
+{
+	input_rc_s rc{};
+	if (!_rc_input_sub.copy(&rc)) {
+		PX4_WARN("Failed to read RC input");
+		return RCMode::MODE_UNKNOWN;
+	}
+
+	// 检查RC信号是否有效
+	if (rc.timestamp_last_signal == 0 || (hrt_absolute_time() - rc.timestamp_last_signal) > 1000000) {
+		PX4_WARN("RC signal lost");
+		return RCMode::MODE_UNKNOWN;
+	}
+
+	// 获取模式通道的PWM值（RC通道索引从0开始，CH6对应索引5）
+	int ch_idx = _rc_mode_channel - 1;
+	if (ch_idx < 0 || ch_idx >= 18) {
+		PX4_ERR("Invalid RC mode channel: %d", _rc_mode_channel);
+		return RCMode::MODE_UNKNOWN;
+	}
+
+	int pwm = rc.values[ch_idx];
+	// 限幅PWM值
+	pwm = math::constrain(pwm, RC_PWM_MIN, RC_PWM_MAX);
+
+	// 判断档位
+	if (pwm >= RC_THRESHOLD_OFFBOARD_LOW && pwm <= RC_THRESHOLD_OFFBOARD_HIGH) {
+		return RCMode::MODE_OFFBOARD;
+	} else if (pwm >= RC_THRESHOLD_POSITION_LOW && pwm < RC_THRESHOLD_POSITION_HIGH) {
+		return RCMode::MODE_POSITION;
+	} else if (pwm >= RC_THRESHOLD_ALTITUDE_LOW && pwm < RC_THRESHOLD_ALTITUDE_HIGH) {
+		return RCMode::MODE_ALTITUDE;
+	} else {
+		return RCMode::MODE_UNKNOWN;
+	}
+}
+
+// 新增：根据RC模式切换飞控模式
+void AttackVision::switch_to_rc_mode(RCMode target_mode)
+{
+	uint64_t now = hrt_absolute_time();
+	if (now - _last_cmd_publish_time < MIN_CMD_INTERVAL_US) {
+		return;
+	}
+
+	vehicle_command_s cmd{};
+	cmd.timestamp = now;
+	cmd.target_system = 1;
+	cmd.target_component = 1;
+	cmd.source_system = 1;
+	cmd.source_component = 1;
+	cmd.confirmation = 0;
+	cmd.from_external = false;
+	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
+
+	switch (target_mode) {
+		case RCMode::MODE_POSITION:
+		// 切换到Position模式（定点）
+		cmd.param1 = 1;  // 主模式：MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+		cmd.param2 = PX4_CUSTOM_MAIN_MODE_POSCTL;  // 子模式：POSITION
+		PX4_INFO("Switch to POSITION mode (RC command)");
+		break;
+
+		case RCMode::MODE_ALTITUDE:
+		// 切换到Altitude模式（定高）
+		cmd.param1 = 1;  // 主模式：MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+		cmd.param2 = PX4_CUSTOM_MAIN_MODE_ALTCTL;  // 子模式：ALTITUDE
+		PX4_INFO("Switch to ALTITUDE mode (RC command)");
+		break;
+
+		case RCMode::MODE_UNKNOWN:
+		// 未知档位，切换到悬停模式
+		cmd.param1 = 1;  // 主模式：AUTO
+		// cmd.param2 = 4;  // 子模式：AUTO_LOITER
+		cmd.param2 = PX4_CUSTOM_MAIN_MODE_AUTO;  // 子模式：AUTO_LOITER
+		cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LAND;  //
+		PX4_INFO("Switch to LOITER mode (unknown RC mode)");
+		break;
+
+		default:
+		return;
+	}
+
+	_vehicle_cmd_pub.publish(cmd);
+	_last_cmd_publish_time = now;
+}
+
 
 /**
  * @brief 切换到悬停模式（Auto Loiter）
@@ -545,9 +616,10 @@ void AttackVision::switch_to_hold()
 
 	vehicle_command_s cmd{};
 	cmd.timestamp = now;
-	cmd.param1 = (float)1;      // 主模式
-	cmd.param2 = (float)4;      // PX4_CUSTOM_MAIN_MODE_AUTO
-	cmd.param3 = (float)3;      // PX4_CUSTOM_SUB_MODE_AUTO_LOITER
+	cmd.param1 = (float)1;      			// 主模式
+	cmd.param2 = (float)4;      			// PX4_CUSTOM_MAIN_MODE_AUTO
+	// cmd.param3 = (float)3;      			// PX4_CUSTOM_SUB_MODE_AUTO_LOITER
+	cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LAND;  	// 子模式：AUTO_LAND
 	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
 	cmd.target_system = 1;
 	cmd.target_component = 1;
@@ -715,6 +787,161 @@ void AttackVision::print_drone_status()
 //  * 3. 循环读取串口数据并解析帧
 //  * 4. 根据锁定状态和超时情况，切换模式并发布控制指令
 //  */
+
+// void AttackVision::Run()
+// {
+// 	PX4_INFO("=== Attack Vision Run() Started ===");
+// 	// 检查模块使能开关
+
+// 	if (_param_av_en.get() == 0) {
+// 		PX4_INFO("Module disabled (AAATTKVIS_EN=0)");
+// 		return; // 若未启用，直接退出循环
+// 	}
+
+// 	if (_param_av_en.get() <= 0) {
+// 		PX4_WARN("AAATTKVIS_EN disabled");
+// 		exit_and_cleanup();
+// 		return;
+// 	}
+
+// 	PX4_INFO("Attack Vision module starting...");
+
+// 	// 打开串口
+// 	if (!open_uart()) {
+// 		PX4_ERR("UART open failed");
+// 		exit_and_cleanup();
+// 		return;
+// 	}
+
+// 	// 确认串口状态
+// 	if (_fd >= 0) {
+// 		PX4_INFO("Attack Vision module started successfully - Using %s",
+// 			#ifdef __PX4_POSIX
+// 					"virtual serial port"
+// 			#else
+// 					"hardware UART /dev/ttyS5"
+// 			#endif
+// 					);
+// 	} else {
+// 		PX4_ERR("UART file descriptor invalid after open");
+// 		exit_and_cleanup();
+// 		return;
+// 	}
+
+// 	const uint64_t frame_timeout_us = 200000;  // 200ms超时
+// 	const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
+// 	static uint64_t last_status_time = 0;
+// 	static uint64_t last_control_time = 0;
+// 	static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
+// 	static int frame_count = 0;
+
+// 	while (!should_exit()) {
+// 		// 尝试读取并处理帧数据
+// 		if (try_read_frame()) {
+// 		// 成功读取到一帧数据
+// 		if (frame_count < 10) {
+// 			PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
+// 			frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+// 			frame_count++;
+// 		}
+// 		}
+
+// 		// 获取vehicle_status
+// 		vehicle_status_s vehicle_status{};
+// 		bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
+
+// 		// 制导逻辑
+// 		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
+
+// 		// 关键修改：在Offboard模式下必须持续发布控制信号
+// 		uint64_t now = hrt_absolute_time();
+// 		bool need_control_publish = (now - last_control_time > control_timeout_us);
+
+// 		if (_lock_active && frame_valid_recent && has_vehicle_status) {
+// 			if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+// 				// 飞控已解锁
+// 				if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+// 				// 已在Offboard模式，执行制导
+// 					if (_module_state != ModuleState::OFFBOARD) {
+// 						PX4_INFO("已进入Offboard模式 - 开始制导");
+// 						_module_state = ModuleState::OFFBOARD;
+// 					}
+
+// 					// 关键：在Offboard模式下必须持续发布控制信号
+// 					if (need_control_publish) {
+// 						handle_guidance();
+// 						last_control_time = now;
+// 					}
+// 				} else {
+// 				// 不在Offboard模式，尝试切换
+// 					if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
+// 						PX4_INFO("尝试切换到Offboard模式");
+// 						_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+
+// 						_switch_start_time = now;
+// 						// 关键：在切换模式前先发布控制信号
+// 						PX4_INFO("先发布零速度控制信号以满足PX4要求");
+// 						publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+// 						last_control_time = now;
+// 					}
+// 						switch_to_offboard();
+// 				}
+// 			} else {
+// 				PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
+// 				if (_module_state != ModuleState::HOLD) {
+// 					_module_state = ModuleState::HOLD;
+// 				}
+// 				// 重置切换计时器
+// 				_switch_start_time = 0;
+// 			}
+// 		} else {
+// 		// 失锁或数据超时
+// 			if (_module_state != ModuleState::HOLD) {
+// 				PX4_INFO("条件不满足，切换回悬停模式");
+// 				switch_to_hold();
+// 				_module_state = ModuleState::HOLD;
+// 			}
+// 			// 重置切换计时器
+// 			_switch_start_time = 0;
+// 		}
+
+// 		// 状态输出（每5秒）
+// 		if (now - last_status_time > 5000000) {
+// 		uint64_t time_since_last = now - _last_frame_time_us;
+// 		// PX4_INFO("状态: 模块状态=%d, 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
+// 		// 	(int)_module_state, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
+// 		// 	(double)(time_since_last) / 1000000.0);
+
+// 		if (has_vehicle_status) {
+// 			PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d",
+// 			vehicle_status.nav_state, vehicle_status.arming_state);
+// 		}
+
+// 		if (time_since_last > 1000000) {
+// 			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
+// 		}
+// 		last_status_time = now;
+// 		}
+
+// 		if (now - last_drone_status_time > 1000000) {
+// 			print_drone_status();
+// 			last_drone_status_time = now;
+// 		}
+
+// 		// // 在handle_guidance调用后添加
+// 		// PX4_INFO("控制指令 - 机体系: (%.2f, %.2f, %.2f) -> NED: (%.2f, %.2f, %.2f)",
+// 		// 	(double)vx_body, (double)vy_body, (double)vz_body,
+// 		// 	(double)v_north, (double)v_east, (double)vz_body);
+
+// 		// 控制循环频率
+// 		usleep(20000); // 50Hz
+// 	}
+
+// 	close_uart();
+// 	exit_and_cleanup();
+// }
+
+
 void AttackVision::Run()
 {
 	PX4_INFO("=== Attack Vision Run() Started ===");
@@ -763,17 +990,32 @@ void AttackVision::Run()
 	static int frame_count = 0;
 
 	while (!should_exit()) {
-		// 尝试读取并处理帧数据
-		if (try_read_frame()) {
-		// 成功读取到一帧数据
-		if (frame_count < 10) {
-			PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
-			frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-			frame_count++;
-		}
+		// ========== 1. 优先解析RC模式（遥控器优先级最高） ==========
+		RCMode new_rc_mode = parse_rc_mode();
+		if (new_rc_mode != _current_rc_mode) {
+			PX4_INFO("RC mode changed: %d -> %d", (int)_current_rc_mode, (int)new_rc_mode);
+			_current_rc_mode = new_rc_mode;
+
+			// RC切换出Offboard档位：立即退出Offboard，切换到对应RC模式
+			if (_current_rc_mode != RCMode::MODE_OFFBOARD && _module_state != ModuleState::HOLD) {
+				PX4_INFO("RC switch out of Offboard, stop guidance");
+				switch_to_rc_mode(_current_rc_mode);
+				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
+			}
 		}
 
-		// 获取vehicle_status
+		// ========== 2. 读取并解析吊舱帧数据 ==========
+		if (try_read_frame()) {
+		// 成功读取到一帧数据
+			if (frame_count < 10) {
+				PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
+					frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+				frame_count++;
+			}
+		}
+
+		// ========== 3. 获取飞控状态 ==========
 		vehicle_status_s vehicle_status{};
 		bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
 
@@ -784,64 +1026,64 @@ void AttackVision::Run()
 		uint64_t now = hrt_absolute_time();
 		bool need_control_publish = (now - last_control_time > control_timeout_us);
 
-		if (_lock_active && frame_valid_recent && has_vehicle_status) {
-			if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
-				// 飞控已解锁
-				if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
-				// 已在Offboard模式，执行制导
-					if (_module_state != ModuleState::OFFBOARD) {
-						PX4_INFO("已进入Offboard模式 - 开始制导");
-						_module_state = ModuleState::OFFBOARD;
-					}
+		// ========== 4. 末制导逻辑（仅当RC在Offboard档位时执行） ==========
+		if (_current_rc_mode == RCMode::MODE_OFFBOARD) { // 遥控器授权Offboard
+			if (_lock_active && frame_valid_recent && has_vehicle_status) {
+				if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+				// 飞控已解锁，尝试进入/保持Offboard
+					if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+					// 已在Offboard模式，执行制导
+						if (_module_state != ModuleState::OFFBOARD) {
+							PX4_INFO("已进入Offboard模式 - 开始末制导（RC授权）");
+							_module_state = ModuleState::OFFBOARD;
+						}
+						// 持续发布控制指令（满足Offboard最低频率要求）
+						if (need_control_publish) {
+							handle_guidance();
+							last_control_time = now;
+						}
+					} else {
+					// 不在Offboard模式，尝试切换
+						if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
+							PX4_INFO("RC授权Offboard，尝试切换模式（锁定目标）");
+							_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 
-					// 关键：在Offboard模式下必须持续发布控制信号
-					if (need_control_publish) {
-						handle_guidance();
-						last_control_time = now;
+							_switch_start_time = now;
+							// 关键：在切换模式前先发布控制信号
+							PX4_INFO("先发布零速度控制信号以满足PX4要求");
+							publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+							last_control_time = now;
+						}
+						switch_to_offboard();
 					}
 				} else {
-				// 不在Offboard模式，尝试切换
-					if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
-						PX4_INFO("尝试切换到Offboard模式");
-						_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-
-						_switch_start_time = now;
-						// 关键：在切换模式前先发布控制信号
-						PX4_INFO("先发布零速度控制信号以满足PX4要求");
-						publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-						last_control_time = now;
+					PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
+					if (_module_state != ModuleState::HOLD) {
+						_module_state = ModuleState::HOLD;
 					}
-						switch_to_offboard();
+					// 重置切换计时器
+					_switch_start_time = 0;
 				}
 			} else {
-				PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
+				// 吊舱失锁/数据超时：退出Offboard，切换到悬停
 				if (_module_state != ModuleState::HOLD) {
-				_module_state = ModuleState::HOLD;
+					PX4_INFO("吊舱状态异常，退出Offboard（RC仍在Offboard档位）");
+					switch_to_hold();
+					_module_state = ModuleState::HOLD;
 				}
 				// 重置切换计时器
 				_switch_start_time = 0;
 			}
 		} else {
-		// 失锁或数据超时
-			if (_module_state != ModuleState::HOLD) {
-				PX4_INFO("条件不满足，切换回悬停模式");
-				switch_to_hold();
-				_module_state = ModuleState::HOLD;
-			}
-			// 重置切换计时器
-			_switch_start_time = 0;
+			// RC不在Offboard档位：强制退出Offboard（已在RC解析阶段处理）
 		}
 
-		// 状态输出（每5秒）
+		// ========== 5. 状态打印（保持原有逻辑） ==========
 		if (now - last_status_time > 5000000) {
-		uint64_t time_since_last = now - _last_frame_time_us;
-		// PX4_INFO("状态: 模块状态=%d, 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
-		// 	(int)_module_state, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
-		// 	(double)(time_since_last) / 1000000.0);
-
+			uint64_t time_since_last = now - _last_frame_time_us;
 		if (has_vehicle_status) {
-			PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d",
-			vehicle_status.nav_state, vehicle_status.arming_state);
+			PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d, RC模式=%d",
+				vehicle_status.nav_state, vehicle_status.arming_state, (int)_current_rc_mode);
 		}
 
 		if (time_since_last > 1000000) {
@@ -855,19 +1097,14 @@ void AttackVision::Run()
 			last_drone_status_time = now;
 		}
 
-		// // 在handle_guidance调用后添加
-		// PX4_INFO("控制指令 - 机体系: (%.2f, %.2f, %.2f) -> NED: (%.2f, %.2f, %.2f)",
-		// 	(double)vx_body, (double)vy_body, (double)vz_body,
-		// 	(double)v_north, (double)v_east, (double)vz_body);
 
-		// 控制循环频率
-		usleep(20000); // 50Hz
+		// 控制循环频率（50Hz）
+		usleep(20000);
 	}
 
 	close_uart();
 	exit_and_cleanup();
 }
-
 
 
 extern "C" __EXPORT int attack_vision_main(int argc, char *argv[])

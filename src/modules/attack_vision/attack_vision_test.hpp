@@ -29,6 +29,7 @@
 #include <termios.h>
 #include <poll.h>
 #include <uORB/Subscription.hpp>
+#include <uORB/topics/input_rc.h>
 
 /**
  * @class AttackVision
@@ -51,6 +52,32 @@ public:
 	void Run() override;
 
 private:
+
+	// ========== 新增：RC遥控器相关 ==========
+	enum class RCMode {
+		MODE_OFFBOARD = 0,  // 末制导档位
+		MODE_POSITION = 1,  // 定点档位
+		MODE_ALTITUDE = 2,  // 定高档位
+		MODE_UNKNOWN = 3    // 未知档位
+	};
+	uORB::Subscription _rc_input_sub{ORB_ID(input_rc)};  // 订阅RC输入话题
+	RCMode _current_rc_mode{RCMode::MODE_UNKNOWN};       // 当前RC模式档位
+	int _rc_mode_channel{6};                             // 模式选择通道（默认CH6）
+	static constexpr int RC_PWM_MIN = 1000;              // RC通道最小PWM
+	static constexpr int RC_PWM_MAX = 2000;              // RC通道最大PWM
+	// 档位PWM阈值（可通过参数配置，这里先硬编码，后续可加参数）
+	static constexpr int RC_THRESHOLD_OFFBOARD_LOW = 1000;
+	static constexpr int RC_THRESHOLD_OFFBOARD_HIGH = 1300;
+	static constexpr int RC_THRESHOLD_ALTITUDE_LOW = 1300;
+	static constexpr int RC_THRESHOLD_ALTITUDE_HIGH = 1700;
+	static constexpr int RC_THRESHOLD_POSITION_LOW = 1700;
+	static constexpr int RC_THRESHOLD_POSITION_HIGH = 2000;
+	// 新增：解析RC通道获取当前模式档位
+	RCMode parse_rc_mode();
+	// 新增：根据RC模式切换飞控模式
+	void switch_to_rc_mode(RCMode target_mode);
+
+
 	// ========== 串口通信相关 ==========
 	int _fd{-1};  ///< 串口文件描述符
 	bool configure_uart(int baudrate);  ///< 配置串口参数（波特率等）
