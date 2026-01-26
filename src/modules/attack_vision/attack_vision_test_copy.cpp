@@ -770,8 +770,8 @@ void AttackVision::handle_guidance()
 		// 发布NED坐标系速度
 		publish_offboard_velocity(v_north, v_east, vz_body, 0.0f);
 		} else {
-		PX4_WARN("无法获取偏航角，使用默认北向");
-		publish_offboard_velocity(vx_body, 0.0f, 0.0f, 0.0f);
+			PX4_WARN("无法获取偏航角，使用默认北向");
+			publish_offboard_velocity(vx_body, 0.0f, 0.0f, 0.0f);
 		}
 	}
 }
