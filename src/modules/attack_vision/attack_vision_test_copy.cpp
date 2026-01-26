@@ -182,6 +182,7 @@ bool AttackVision::configure_uart(int baudrate)
 	termios t{};
 	if (tcgetattr(_fd, &t) != 0) {
 		PX4_ERR("tcgetattr failed");
+		close_uart(); // 添加资源清理
 		return false;
 	}
 	cfmakeraw(&t);  // 设置为原始模式（无行缓冲、无回显等）
@@ -194,6 +195,11 @@ bool AttackVision::configure_uart(int baudrate)
 	else if (baudrate == 38400) speed = B38400;
 	else if (baudrate == 57600) speed = B57600;
 	else if (baudrate == 115200) speed = B115200;
+	else {
+		PX4_ERR("Unsupported baudrate: %d", baudrate);
+		close_uart(); // 添加资源清理
+		return false;
+	}
 
 	cfsetispeed(&t, speed);
 	cfsetospeed(&t, speed);
@@ -308,7 +314,7 @@ bool AttackVision::try_read_frame()
 
 	return false;
 	#else
-	// 硬件模式：原有的文件描述符读取逻辑
+	// 硬件模式：统一使用滑动窗口处理
 	if (_fd < 0) {
 		PX4_ERR("文件描述符无效: %d", _fd);
 		return false;
@@ -334,6 +340,13 @@ bool AttackVision::try_read_frame()
 	// 处理所有读取到的字节
 	for (ssize_t i = 0; i < n; i++) {
 		uint8_t byte = read_buf[i];
+
+		// 如果缓冲区已满，滑动窗口
+		if (_buf_len >= FRAME_LEN) {
+		memmove(_buf, _buf + 1, FRAME_LEN - 1);
+		_buf_len = FRAME_LEN - 1;
+		}
+
 		_buf[_buf_len++] = byte;
 
 		// 检查是否收集到完整帧
@@ -343,10 +356,10 @@ bool AttackVision::try_read_frame()
 		if (ok) {
 			_last_frame_time_us = hrt_absolute_time();
 			parse_frame_data();
-			_buf_len = 0;
+			_buf_len = 0; // 统一重置缓冲区
 			return true;
 		} else {
-			// 校验失败，滑动窗口
+			// 校验失败，滑动窗口继续搜索
 			memmove(_buf, _buf + 1, FRAME_LEN - 1);
 			_buf_len = FRAME_LEN - 1;
 			PX4_WARN("帧校验失败，滑动窗口");
@@ -679,7 +692,7 @@ void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float
 	// 注意：NED坐标系中，向下为正，所以要保持高度需要 velocity[2] = 0
 	sp.velocity[0] = vx;  // North方向速度（前向）
 	sp.velocity[1] = vy;  // East方向速度（右侧）
-	sp.velocity[2] = vz; // 关键：保持高度，垂直速度设为0
+	sp.velocity[2] = vz; //
 
 	_traj_sp_pub.publish(sp);
 
@@ -717,6 +730,12 @@ void AttackVision::handle_guidance()
 	const float kp = _param_av_kp.get();      // 速度控制增益（m/s每像素）
 	const float dead = _param_av_dead.get();  // 像素死区
 	const float maxv = _param_av_max_v.get(); // 最大速度限制
+
+	// 参数合理性检查
+	if (!PX4_ISFINITE(kp) || !PX4_ISFINITE(dead) || !PX4_ISFINITE(maxv)) {
+		PX4_ERR("参数无效，停止制导");
+		return;
+	}
 
 	float ex = (float)_pix_offset_x;  // 方位方向像素偏差 -> 控制横向
 	float ey = (float)_pix_offset_y;  // 俯仰方向像素偏差 -> 控制垂直
@@ -787,161 +806,6 @@ void AttackVision::print_drone_status()
 //  * 3. 循环读取串口数据并解析帧
 //  * 4. 根据锁定状态和超时情况，切换模式并发布控制指令
 //  */
-
-// void AttackVision::Run()
-// {
-// 	PX4_INFO("=== Attack Vision Run() Started ===");
-// 	// 检查模块使能开关
-
-// 	if (_param_av_en.get() == 0) {
-// 		PX4_INFO("Module disabled (AAATTKVIS_EN=0)");
-// 		return; // 若未启用，直接退出循环
-// 	}
-
-// 	if (_param_av_en.get() <= 0) {
-// 		PX4_WARN("AAATTKVIS_EN disabled");
-// 		exit_and_cleanup();
-// 		return;
-// 	}
-
-// 	PX4_INFO("Attack Vision module starting...");
-
-// 	// 打开串口
-// 	if (!open_uart()) {
-// 		PX4_ERR("UART open failed");
-// 		exit_and_cleanup();
-// 		return;
-// 	}
-
-// 	// 确认串口状态
-// 	if (_fd >= 0) {
-// 		PX4_INFO("Attack Vision module started successfully - Using %s",
-// 			#ifdef __PX4_POSIX
-// 					"virtual serial port"
-// 			#else
-// 					"hardware UART /dev/ttyS5"
-// 			#endif
-// 					);
-// 	} else {
-// 		PX4_ERR("UART file descriptor invalid after open");
-// 		exit_and_cleanup();
-// 		return;
-// 	}
-
-// 	const uint64_t frame_timeout_us = 200000;  // 200ms超时
-// 	const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
-// 	static uint64_t last_status_time = 0;
-// 	static uint64_t last_control_time = 0;
-// 	static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
-// 	static int frame_count = 0;
-
-// 	while (!should_exit()) {
-// 		// 尝试读取并处理帧数据
-// 		if (try_read_frame()) {
-// 		// 成功读取到一帧数据
-// 		if (frame_count < 10) {
-// 			PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
-// 			frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-// 			frame_count++;
-// 		}
-// 		}
-
-// 		// 获取vehicle_status
-// 		vehicle_status_s vehicle_status{};
-// 		bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
-
-// 		// 制导逻辑
-// 		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
-
-// 		// 关键修改：在Offboard模式下必须持续发布控制信号
-// 		uint64_t now = hrt_absolute_time();
-// 		bool need_control_publish = (now - last_control_time > control_timeout_us);
-
-// 		if (_lock_active && frame_valid_recent && has_vehicle_status) {
-// 			if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
-// 				// 飞控已解锁
-// 				if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
-// 				// 已在Offboard模式，执行制导
-// 					if (_module_state != ModuleState::OFFBOARD) {
-// 						PX4_INFO("已进入Offboard模式 - 开始制导");
-// 						_module_state = ModuleState::OFFBOARD;
-// 					}
-
-// 					// 关键：在Offboard模式下必须持续发布控制信号
-// 					if (need_control_publish) {
-// 						handle_guidance();
-// 						last_control_time = now;
-// 					}
-// 				} else {
-// 				// 不在Offboard模式，尝试切换
-// 					if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
-// 						PX4_INFO("尝试切换到Offboard模式");
-// 						_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-
-// 						_switch_start_time = now;
-// 						// 关键：在切换模式前先发布控制信号
-// 						PX4_INFO("先发布零速度控制信号以满足PX4要求");
-// 						publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-// 						last_control_time = now;
-// 					}
-// 						switch_to_offboard();
-// 				}
-// 			} else {
-// 				PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
-// 				if (_module_state != ModuleState::HOLD) {
-// 					_module_state = ModuleState::HOLD;
-// 				}
-// 				// 重置切换计时器
-// 				_switch_start_time = 0;
-// 			}
-// 		} else {
-// 		// 失锁或数据超时
-// 			if (_module_state != ModuleState::HOLD) {
-// 				PX4_INFO("条件不满足，切换回悬停模式");
-// 				switch_to_hold();
-// 				_module_state = ModuleState::HOLD;
-// 			}
-// 			// 重置切换计时器
-// 			_switch_start_time = 0;
-// 		}
-
-// 		// 状态输出（每5秒）
-// 		if (now - last_status_time > 5000000) {
-// 		uint64_t time_since_last = now - _last_frame_time_us;
-// 		// PX4_INFO("状态: 模块状态=%d, 锁定=%d, 脱靶量=(%d,%d), 最后帧 %.1f 秒前",
-// 		// 	(int)_module_state, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
-// 		// 	(double)(time_since_last) / 1000000.0);
-
-// 		if (has_vehicle_status) {
-// 			PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d",
-// 			vehicle_status.nav_state, vehicle_status.arming_state);
-// 		}
-
-// 		if (time_since_last > 1000000) {
-// 			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
-// 		}
-// 		last_status_time = now;
-// 		}
-
-// 		if (now - last_drone_status_time > 1000000) {
-// 			print_drone_status();
-// 			last_drone_status_time = now;
-// 		}
-
-// 		// // 在handle_guidance调用后添加
-// 		// PX4_INFO("控制指令 - 机体系: (%.2f, %.2f, %.2f) -> NED: (%.2f, %.2f, %.2f)",
-// 		// 	(double)vx_body, (double)vy_body, (double)vz_body,
-// 		// 	(double)v_north, (double)v_east, (double)vz_body);
-
-// 		// 控制循环频率
-// 		usleep(20000); // 50Hz
-// 	}
-
-// 	close_uart();
-// 	exit_and_cleanup();
-// }
-
-
 void AttackVision::Run()
 {
 	PX4_INFO("=== Attack Vision Run() Started ===");
@@ -1111,5 +975,3 @@ extern "C" __EXPORT int attack_vision_main(int argc, char *argv[])
 {
 	return AttackVision::main(argc, argv);
 }
-
-
