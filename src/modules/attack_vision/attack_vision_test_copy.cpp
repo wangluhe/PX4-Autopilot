@@ -399,7 +399,6 @@ void AttackVision::parse_frame_data()
 	// 特别注意Bit9和Bit10（协议中的锁定状态位）
 	bool bit9 = (status_5_6 & (1 << 9)) != 0;
 	bool bit10 = (status_5_6 & (1 << 10)) != 0;
-	// PX4_INFO("锁定状态位: Bit9=%d, Bit10=%d", (int)bit9, (int)bit10);
 
 	// 根据协议第14页，Bit9~Bit10表示目标锁定标识位：
 	// 00: 默认（无效）
@@ -443,18 +442,35 @@ void AttackVision::parse_frame_data()
 
 	_lock_active = locking && (servo_state == 0x07);
 
+	// ========== 原脱靶量解析（保留，兼容扩展） ==========
+
 	// 第59-60字节：目标脱靶量-方位方向（INT16，小端序，单位：像素）
 	_pix_offset_x = (int16_t)((uint16_t)_buf[58] | ((uint16_t)_buf[59] << 8));
 	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
-
 	// 调试输出脱靶量
 	PX4_INFO("[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
 		_buf[58], _buf[59], _buf[60], _buf[61]);
+	PX4_INFO("=========================================");
 
-	// PX4_INFO("解析结果 - 锁定=%d, 脱靶量=(%d,%d), locking=%d, servo=0x%02X(%s)",
-	// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y,
-	// 	(int)locking, servo_state, servo_state_str);
+	// ========== 新增：解析吊舱姿态角（关键修改） ==========
+	// 假设字节位置（需根据实际协议调整！）：
+	// 字节10-11：方位角（INT16，0.01°/LSB，小端序）
+	// 字节12-13：俯仰角（INT16，0.01°/LSB，小端序）
+	// 字节14-15：滚转角（INT16，0.01°/LSB，小端序）
+	roll_deg_100 = (int16_t)((uint16_t)_buf[13] | ((uint16_t)_buf[14] << 8));
+	pitch_deg_100 = (int16_t)((uint16_t)_buf[11] | ((uint16_t)_buf[12] << 8));
+	yaw_deg_100 = (int16_t)((uint16_t)_buf[9] | ((uint16_t)_buf[10] << 8));
+	// 转换为弧度（PX4姿态控制单位）
+	_gimbal_roll = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
+	_gimbal_pitch = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
+	_gimbal_yaw = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
+
+	// 打印吊舱姿态（调试用）
+	PX4_INFO("吊舱姿态: 横滚=%.2f° (%.3frad), 俯仰=%.2f° (%.3frad), 方位=%.2f° (%.3frad)",
+		(double)roll_deg_100 / 100.0, (double)_gimbal_roll,
+		(double)pitch_deg_100 / 100.0, (double)_gimbal_pitch,
+		(double)yaw_deg_100 / 100.0, (double)_gimbal_yaw);
 	PX4_INFO("=========================================");
 }
 
@@ -704,13 +720,6 @@ void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float
 	// 调试：获取当前脱靶量状态
 	int16_t current_offset_x, current_offset_y;
 	VSerial::get_instance().get_target_offset(current_offset_x, current_offset_y);
-
-	// static int debug_count = 0;
-	// if (debug_count < 20) {
-	// 	PX4_INFO("闭环控制: 发送控制量(%.3f,%.3f,%.3f), 当前脱靶量(%d,%d)",
-	// 			(double)vx, (double)vy, (double)vz, current_offset_x, current_offset_y);
-	// 	debug_count++;
-	// }
 	#endif
 
 }
@@ -725,55 +734,290 @@ void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float
  * - 前向保持恒定速度（vx）
  * - 偏航角速度保持为0（保持当前航向）
  */
+// void AttackVision::handle_guidance()
+// {
+// 	const float kp = _param_av_kp.get();      // 速度控制增益（m/s每像素）
+// 	const float dead = _param_av_dead.get();  // 像素死区
+// 	const float maxv = _param_av_max_v.get(); // 最大速度限制
+
+// 	// 参数合理性检查
+// 	if (!PX4_ISFINITE(kp) || !PX4_ISFINITE(dead) || !PX4_ISFINITE(maxv)) {
+// 		PX4_ERR("参数无效，停止制导");
+// 		return;
+// 	}
+
+// 	float ex = (float)_pix_offset_x;  // 方位方向像素偏差 -> 控制横向
+// 	float ey = (float)_pix_offset_y;  // 俯仰方向像素偏差 -> 控制垂直
+
+// 	if (PX4_ISFINITE(ex) && PX4_ISFINITE(ey)) {
+// 		// 应用死区：小于死区阈值时清零
+// 		if (fabsf(ex) < dead) ex = 0.f;
+// 		if (fabsf(ey) < dead) ey = 0.f;
+
+// 		// 计算机体系速度（你的逻辑）
+// 		float vx_body = _forward_velocity;  // 机头方向
+// 		float vy_body = -math::constrain(kp * ex, -maxv, maxv);  // 右侧方向
+// 		float vz_body = -math::constrain(kp * ey, -maxv, maxv);  // 向下方向
+
+// 		// 获取当前偏航角（航向）
+// 		vehicle_local_position_s local_pos{};
+// 		if (_vehicle_local_position_sub.copy(&local_pos)) {
+// 		float yaw = local_pos.heading; // 当前偏航角（弧度）
+
+// 		// 将机体系速度转换为NED坐标系速度
+// 		// v_north = vx_body * cos(yaw) - vy_body * sin(yaw)
+// 		// v_east  = vx_body * sin(yaw) + vy_body * cos(yaw)
+// 		float v_north = vx_body * cosf(yaw) - vy_body * sinf(yaw);
+// 		float v_east  = vx_body * sinf(yaw) + vy_body * cosf(yaw);
+
+// 		// 第671-675行修改为：
+// 		PX4_INFO("机体系->NED转换: 偏航=%.1f°, 机体系(%.2f,%.2f,%.2f) -> NED(%.2f,%.2f,%.2f)",
+// 		(double)(yaw * 180.0f / M_PI_F),
+// 		(double)vx_body, (double)vy_body, (double)vz_body,
+// 		(double)v_north, (double)v_east, (double)vz_body);
+
+// 		// 发布NED坐标系速度
+// 		publish_offboard_velocity(v_north, v_east, vz_body, 0.0f);
+// 		} else {
+// 			PX4_WARN("无法获取偏航角，使用默认北向");
+// 			publish_offboard_velocity(vx_body, 0.0f, 0.0f, 0.0f);
+// 		}
+// 	}
+// }
+
+
+// 工具函数：四元数转欧拉角（FRD->NED，单位：弧度）
+// q: [w, x, y, z] 四元数
+// 返回：roll(横滚), pitch(俯仰), yaw(偏航)
+void quaternion_to_euler(const float q[4], float &roll, float &pitch, float &yaw)
+{
+	// 提取四元数分量
+	const float qw = q[0];
+	const float qx = q[1];
+	const float qy = q[2];
+	const float qz = q[3];
+
+	// 四元数转欧拉角（PX4 FRD body -> NED earth 坐标系）
+	// 横滚 (roll)：绕X轴旋转
+	roll = atan2f(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
+	// 俯仰 (pitch)：绕Y轴旋转（限幅避免万向锁）
+	pitch = asinf(math::constrain(2.0f * (qw * qy - qz * qx), -1.0f, 1.0f));
+	// 偏航 (yaw)：绕Z轴旋转（归一化到 [-π, π]）
+	yaw = atan2f(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz));
+}
+
+
+
 void AttackVision::handle_guidance()
 {
-	const float kp = _param_av_kp.get();      // 速度控制增益（m/s每像素）
-	const float dead = _param_av_dead.get();  // 像素死区
-	const float maxv = _param_av_max_v.get(); // 最大速度限制
+	// 获取控制参数（姿态增益、最大速度）
+	const float att_kp = _param_av_att_kp.get();    // 姿态控制增益（默认0.1）
+	const float max_forward_v = _param_av_forward_v.get();  // 前向接近速度（默认1.0m/s）
+	const float max_att_error = 0.5f;  // 最大姿态偏差限制（弧度，~28.6°）
 
-	// 参数合理性检查
-	if (!PX4_ISFINITE(kp) || !PX4_ISFINITE(dead) || !PX4_ISFINITE(maxv)) {
-		PX4_ERR("参数无效，停止制导");
+	// 参数有效性检查
+	if (!PX4_ISFINITE(att_kp) || !PX4_ISFINITE(max_forward_v)) {
+		PX4_ERR("姿态控制参数无效，停止制导");
 		return;
 	}
 
-	float ex = (float)_pix_offset_x;  // 方位方向像素偏差 -> 控制横向
-	float ey = (float)_pix_offset_y;  // 俯仰方向像素偏差 -> 控制垂直
-
-	if (PX4_ISFINITE(ex) && PX4_ISFINITE(ey)) {
-		// 应用死区：小于死区阈值时清零
-		if (fabsf(ex) < dead) ex = 0.f;
-		if (fabsf(ey) < dead) ey = 0.f;
-
-		// 计算机体系速度（你的逻辑）
-		float vx_body = _forward_velocity;  // 机头方向
-		float vy_body = -math::constrain(kp * ex, -maxv, maxv);  // 右侧方向
-		float vz_body = -math::constrain(kp * ey, -maxv, maxv);  // 向下方向
-
-		// 获取当前偏航角（航向）
-		vehicle_local_position_s local_pos{};
-		if (_vehicle_local_position_sub.copy(&local_pos)) {
-		float yaw = local_pos.heading; // 当前偏航角（弧度）
-
-		// 将机体系速度转换为NED坐标系速度
-		// v_north = vx_body * cos(yaw) - vy_body * sin(yaw)
-		// v_east  = vx_body * sin(yaw) + vy_body * cos(yaw)
-		float v_north = vx_body * cosf(yaw) - vy_body * sinf(yaw);
-		float v_east  = vx_body * sinf(yaw) + vy_body * cosf(yaw);
-
-		// 第671-675行修改为：
-		PX4_INFO("机体系->NED转换: 偏航=%.1f°, 机体系(%.2f,%.2f,%.2f) -> NED(%.2f,%.2f,%.2f)",
-		(double)(yaw * 180.0f / M_PI_F),
-		(double)vx_body, (double)vy_body, (double)vz_body,
-		(double)v_north, (double)v_east, (double)vz_body);
-
-		// 发布NED坐标系速度
-		publish_offboard_velocity(v_north, v_east, vz_body, 0.0f);
-		} else {
-			PX4_WARN("无法获取偏航角，使用默认北向");
-			publish_offboard_velocity(vx_body, 0.0f, 0.0f, 0.0f);
-		}
+	// ========== 1. 获取无人机当前姿态 ==========
+	vehicle_attitude_s veh_att{};
+	if (!_vehicle_attitude_sub.copy(&veh_att)) {
+		PX4_WARN("无法获取无人机姿态，跳过控制");
+		return;
 	}
+
+	// 四元数转欧拉角（核心修改）
+	// 弧度
+	float veh_roll, veh_pitch, veh_yaw;
+	quaternion_to_euler(veh_att.q, veh_roll, veh_pitch, veh_yaw);
+
+	// 打印无人机当前姿态（调试用）
+	PX4_INFO("无人机当前姿态: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
+		static_cast<double>(veh_roll) * 180.0 / M_PI,
+		static_cast<double>(veh_pitch) * 180.0 / M_PI,
+		static_cast<double>(veh_yaw) * 180.0 / M_PI);
+
+
+	// ========== 2. 计算姿态偏差（吊舱姿态 - 无人机姿态） ==========
+
+	float roll_error = _gimbal_roll - veh_roll;
+	float pitch_error = _gimbal_pitch - veh_pitch;
+	float yaw_error = _gimbal_yaw - veh_yaw;
+
+	PX4_INFO("误差限幅前: 滚=%.2f°,俯=%.2f°,偏=%.2f°",
+		static_cast<double>(roll_error * 180.0f / M_PI_F),
+		static_cast<double>(pitch_error * 180.0f / M_PI_F),
+		static_cast<double>(yaw_error * 180.0f / M_PI_F));
+
+
+	// 姿态偏差限幅（防止控制饱和）
+	roll_error = math::constrain(roll_error, -max_att_error, max_att_error);
+	pitch_error = math::constrain(pitch_error, -max_att_error, max_att_error);
+	yaw_error = math::constrain(yaw_error, -max_att_error, max_att_error);
+
+	PX4_INFO("误差限幅后: 滚=%.2f°,俯=%.2f°,偏=%.2f° (限制±%.1f°)",
+		static_cast<double>(roll_error * 180.0f / M_PI_F),
+		static_cast<double>(pitch_error * 180.0f / M_PI_F),
+		static_cast<double>(yaw_error * 180.0f / M_PI_F),
+		static_cast<double>(max_att_error * 180.0f / M_PI_F));
+
+	// ========== 3. 姿态控制律（比例控制） ==========
+	float target_roll = veh_roll+ att_kp * roll_error;
+	float target_pitch = veh_pitch + att_kp * pitch_error;
+	float target_yaw = veh_yaw + att_kp * yaw_error;
+	float target_yaw_rate = 0.0f;  // 偏航角速度保持0（跟随姿态即可）
+
+	PX4_INFO("姿态控制 - 限幅前: 滚=%.2f°(原始=%.2f°+误差=%.2f°*%.2f), 俯=%.2f°, 偏=%.2f°",
+		static_cast<double>(target_roll * 180.0f / M_PI_F),
+		static_cast<double>(veh_roll * 180.0f / M_PI_F),
+		static_cast<double>(roll_error * 180.0f / M_PI_F),
+		static_cast<double>(att_kp),
+		static_cast<double>(target_pitch * 180.0f / M_PI_F),
+		static_cast<double>(target_yaw * 180.0f / M_PI_F));
+
+	// 目标姿态限幅（符合无人机物理极限）
+	float target_roll_before = target_roll;
+	float target_pitch_before = target_pitch;
+	float target_yaw_before = target_yaw;
+
+	target_roll = math::constrain(target_roll, -M_PI_4_F, M_PI_4_F);    // 横滚±45°
+	target_pitch = math::constrain(target_pitch, -M_PI_2_F/3.0f, M_PI_2_F/3.0f);  // 俯仰±30°
+	target_yaw = matrix::wrap_pi(target_yaw);  // 偏航角归一化到[-π, π]
+
+	// 调试输出：限幅后的目标姿态
+	PX4_INFO("姿态控制 - 限幅后: 滚=%.2f°(前:%.2f°), 俯=%.2f°(前:%.2f°), 偏=%.2f°(前:%.2f°)",
+		static_cast<double>(target_roll * 180.0f / M_PI_F),
+		static_cast<double>(target_roll_before * 180.0f / M_PI_F),
+		static_cast<double>(target_pitch * 180.0f / M_PI_F),
+		static_cast<double>(target_pitch_before * 180.0f / M_PI_F),
+		static_cast<double>(target_yaw * 180.0f / M_PI_F),
+		static_cast<double>(target_yaw_before * 180.0f / M_PI_F));
+
+	// 检查是否发生限幅
+	if (fabsf(target_roll_before - target_roll) > 0.01f) {
+		PX4_WARN("横滚角被限幅! 原始值%.2f°超出±45°限制", static_cast<double>(target_roll_before * 180.0f / M_PI_F));
+	}
+	if (fabsf(target_pitch_before - target_pitch) > 0.01f) {
+		PX4_WARN("俯仰角被限幅! 原始值%.2f°超出±30°限制", static_cast<double>(target_pitch_before * 180.0f / M_PI_F));
+	}
+	if (fabsf(target_yaw_before - target_yaw) > 0.01f) {
+		PX4_WARN("偏航角被包装! 原始值%.2f°超出[-180°,180°]范围", static_cast<double>(target_yaw_before * 180.0f / M_PI_F));
+	}
+
+		// ========== 4. 获取前向速度（向目标靠近） ==========
+	// 前向速度沿无人机机头方向（NED坐标系转换）
+	vehicle_local_position_s local_pos{};
+	float vx_ned = 0.0f, vy_ned = 0.0f;
+	if (_vehicle_local_position_sub.copy(&local_pos)) {
+		float yaw = local_pos.heading;
+		// 机体系前向速度 -> NED坐标系速度
+		vx_ned = max_forward_v * cosf(yaw);
+		vy_ned = max_forward_v * sinf(yaw);
+	} else {
+		vx_ned = max_forward_v;  //  fallback：默认北向
+	}
+
+	// ========== 5. 发布姿态+速度控制指令 ==========
+	// 发布Offboard控制模式（启用姿态+速度混合控制）
+	// offboard_control_mode_s ocm{};
+	// ocm.timestamp = hrt_absolute_time();
+	// ocm.position = false;
+	// ocm.velocity = true;   // 启用速度控制（前向靠近）
+	// ocm.attitude = true;   // 启用姿态控制（跟踪吊舱）
+	// ocm.body_rate = false;
+	// _offboard_ctrl_pub.publish(ocm);
+
+	// // 发布轨迹设定点（姿态+速度）
+	// trajectory_setpoint_s sp{};
+	// sp.timestamp = ocm.timestamp;
+	// // 位置：不控制（设为NaN）
+	// sp.position[0] = NAN;
+	// sp.position[1] = NAN;
+	// sp.position[2] = NAN;
+	// // 速度：前向靠近（NED坐标系）
+	// sp.velocity[0] = vx_ned;
+	// sp.velocity[1] = vy_ned;
+	// sp.velocity[2] = 0.0f;  // 垂直速度保持0（定高）
+	// // 姿态：跟踪吊舱
+	// sp.roll = target_roll;
+	// sp.pitch = target_pitch;
+	// sp.yaw = target_yaw;
+	// sp.yawspeed = target_yaw_rate;
+	// // 加速度：不控制
+	// sp.acceleration[0] = NAN;
+	// sp.acceleration[1] = NAN;
+	// sp.acceleration[2] = NAN;
+
+	// _traj_sp_pub.publish(sp);
+	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, target_yaw_rate);
+
+	// 调试输出
+	PX4_INFO("姿态跟踪: 目标(滚=%.2f°, 俯=%.2f°, 偏=%.2f°) | 速度(前向=%.2fm/s)",
+		static_cast<double>(target_roll * 180.0f / M_PI_F),
+		static_cast<double>(target_pitch * 180.0f / M_PI_F),
+		static_cast<double>(target_yaw * 180.0f / M_PI_F),
+		static_cast<double>(max_forward_v));
+
+}
+
+// ========== 新增：姿态+速度控制发布函数 ==========
+/**
+ * @brief 发布姿态+速度控制指令
+ * @param target_roll 目标横滚角（弧度）
+ * @param target_pitch 目标俯仰角（弧度）
+ * @param target_yaw 目标偏航角（弧度）
+ * @param vx_ned 北向速度（m/s）
+ * @param vy_ned 东向速度（m/s）
+ * @param target_yaw_rate 偏航角速度（rad/s）
+ */
+void AttackVision::publish_attitude_velocity_control(
+	float target_roll, float target_pitch,
+	float target_yaw, float vx_ned,
+	float vy_ned, float target_yaw_rate)
+{
+	// 发布Offboard控制模式（启用姿态+速度混合控制）
+	offboard_control_mode_s ocm{};
+	ocm.timestamp = hrt_absolute_time();
+	ocm.position = false;
+	ocm.velocity = true;   // 启用速度控制（前向靠近）
+	ocm.attitude = true;   // 启用姿态控制（跟踪吊舱）
+	ocm.body_rate = false;
+	_offboard_ctrl_pub.publish(ocm);
+
+	// 发布轨迹设定点（姿态+速度）
+	trajectory_setpoint_s sp{};
+	sp.timestamp = ocm.timestamp;
+	// 位置：不控制（设为NaN）
+	sp.position[0] = NAN;
+	sp.position[1] = NAN;
+	sp.position[2] = NAN;
+	// 速度：前向靠近（NED坐标系）
+	sp.velocity[0] = vx_ned;
+	sp.velocity[1] = vy_ned;
+	sp.velocity[2] = 0.0f;  // 垂直速度保持0（定高）
+	// 加速度：不控制
+	sp.acceleration[0] = NAN;
+	sp.acceleration[1] = NAN;
+	sp.acceleration[2] = NAN;
+
+	_traj_sp_pub.publish(sp);
+
+
+	vehicle_attitude_setpoint_s att_sp{};
+	att_sp.timestamp = ocm.timestamp;
+
+	// 方法A：使用四元数
+	matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(target_roll, target_pitch, target_yaw));
+	att_sp.q_d[0] = q_target(0);
+	att_sp.q_d[1] = q_target(1);
+	att_sp.q_d[2] = q_target(2);
+	att_sp.q_d[3] = q_target(3);
+
+	att_sp.yaw_sp_move_rate = target_yaw_rate;
+	_att_sp_pub.publish(att_sp);
+
 }
 
 /**

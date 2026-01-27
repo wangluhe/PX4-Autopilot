@@ -25,11 +25,12 @@
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_local_position.h>
-
+#include <uORB/topics/vehicle_attitude.h>  // 新增：订阅无人机姿态
 #include <termios.h>
 #include <poll.h>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/input_rc.h>
+#include <uORB/topics/vehicle_attitude_setpoint.h>
 
 /**
  * @class AttackVision
@@ -99,6 +100,14 @@ private:
 	int16_t _pix_offset_x{0};  ///< 目标脱靶量-方位方向（像素，字节59-60，INT16）
 	int16_t _pix_offset_y{0};  ///< 目标脱靶量-俯仰方向（像素，字节61-62，INT16）
 
+	int16_t roll_deg_100{0}; // 横滚角（100倍度）
+	int16_t pitch_deg_100{0}; // 俯仰角（100倍度）
+	int16_t yaw_deg_100{0}; // 方位角（100倍度）
+
+	float _gimbal_roll{0.0f};   // 吊舱横滚角（弧度）
+	float _gimbal_pitch{0.0f};  // 吊舱俯仰角（弧度）
+	float _gimbal_yaw{0.0f};    // 吊舱方位角（弧度）
+
 	// ========== 状态机相关 ==========
 	enum class ModuleState {
 		HOLD,                   ///< 悬停模式
@@ -119,13 +128,18 @@ private:
 	void parse_frame_data();
 	void close_uart();
 	void print_drone_status();
+	void publish_attitude_velocity_control(float target_roll, float target_pitch,
+	float target_yaw, float vx_ned,
+	float vy_ned, float target_yaw_rate);
 
 	// ========== uORB话题订阅和发布 ==========
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};  ///< 订阅载具状态
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};  // 订阅无人机当前姿态
 	uORB::Publication<offboard_control_mode_s> _offboard_ctrl_pub{ORB_ID(offboard_control_mode)};  ///< 发布Offboard控制模式
 	uORB::Publication<trajectory_setpoint_s> _traj_sp_pub{ORB_ID(trajectory_setpoint)};  ///< 发布轨迹设定点（速度指令）
 	uORB::Publication<vehicle_command_s> _vehicle_cmd_pub{ORB_ID(vehicle_command)};  ///< 发布载具命令（模式切换等）
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};  ///< 订阅载具位置
+	uORB::Publication<vehicle_attitude_setpoint_s> _att_sp_pub{ORB_ID(vehicle_attitude_setpoint)};
 
 	// ========== 模块参数 ==========
 	DEFINE_PARAMETERS(
@@ -134,6 +148,9 @@ private:
 		(ParamFloat<px4::params::AV_KP>) _param_av_kp,    ///< 速度控制增益（m/s每像素，默认0.001）
 		(ParamFloat<px4::params::AV_DEAD>) _param_av_dead,  ///< 像素死区（默认5像素）
 		(ParamFloat<px4::params::AV_MAX_V>) _param_av_max_v,  ///< 最大速度限制（m/s，默认1.0）
+		(ParamFloat<px4::params::AV_ATT_KP>) _param_av_att_kp,  // 姿态控制增益（新增复用）
+		(ParamFloat<px4::params::AV_APPROACH_V>) _param_av_approach_v,  // 最大接近速度
+		(ParamInt<px4::params::AV_STRATEGY>) _param_av_strategy,  // 控制策略（1=姿态控制）
 		(ParamFloat<px4::params::AV_FORWARD_V>) _param_av_forward_v
 	)
 };
