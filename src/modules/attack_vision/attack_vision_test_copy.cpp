@@ -830,8 +830,13 @@ void AttackVision::handle_guidance()
 
 	// 四元数转欧拉角（核心修改）
 	// 弧度
-	float veh_roll, veh_pitch, veh_yaw;
-	quaternion_to_euler(veh_att.q, veh_roll, veh_pitch, veh_yaw);
+	// 无人机姿态四元数（NED坐标系）
+	matrix::Quatf q_veh_ned(veh_att.q);
+	matrix::Eulerf euler_veh_ned(q_veh_ned);
+
+	float veh_roll = euler_veh_ned.phi();    // 无人机横滚角（NED）
+	float veh_pitch = euler_veh_ned.theta(); // 无人机俯仰角（NED）
+	float veh_yaw = euler_veh_ned.psi();     // 无人机偏航角（NED，0=北）
 
 	// 打印无人机当前姿态（调试用）
 	PX4_INFO("无人机当前姿态: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
@@ -841,16 +846,42 @@ void AttackVision::handle_guidance()
 
 
 	// ========== 2. 计算姿态偏差（吊舱姿态 - 无人机姿态） ==========
+	// ========== 2. 将吊舱姿态从机体坐标系转换到NED坐标系 ==========
+	// 吊舱姿态相对于机体的欧拉角（机体坐标系）
+	matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
+	matrix::Quatf q_gimbal_body(gimbal_body);
 
-	float roll_error = _gimbal_roll - veh_roll;
-	float pitch_error = _gimbal_pitch - veh_pitch;
-	float yaw_error = _gimbal_yaw - veh_yaw;
+	// 机体坐标系到NED坐标系的变换就是无人机的姿态四元数
+	// 吊舱NED姿态 = 无人机NED姿态 × 吊舱相对于机体的姿态
+	matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body;
+	matrix::Eulerf euler_gimbal_ned(q_gimbal_ned);
+
+	float gimbal_roll_ned = euler_gimbal_ned.phi();
+	float gimbal_pitch_ned = euler_gimbal_ned.theta();
+	float gimbal_yaw_ned = euler_gimbal_ned.psi();
+
+	// 打印吊舱姿态（调试用）
+	PX4_INFO("吊舱姿态: 机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°),NED系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
+		static_cast<double>(_gimbal_roll) * 180.0 / M_PI,
+		static_cast<double>(_gimbal_pitch) * 180.0 / M_PI,
+		static_cast<double>(_gimbal_yaw) * 180.0 / M_PI,
+		static_cast<double>(gimbal_roll_ned) * 180.0 / M_PI,
+		static_cast<double>(gimbal_pitch_ned) * 180.0 / M_PI,
+		static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
+
+	// ========== 3. 计算姿态偏差（吊舱NED姿态 - 无人机NED姿态） ==========
+	//弧度
+	float roll_error = gimbal_roll_ned - veh_roll;
+	float pitch_error = gimbal_pitch_ned - veh_pitch;
+	float yaw_error = gimbal_yaw_ned - veh_yaw;
+
+	// 偏航角误差处理：考虑角度循环
+	yaw_error = matrix::wrap_pi(yaw_error);
 
 	PX4_INFO("误差限幅前: 滚=%.2f°,俯=%.2f°,偏=%.2f°",
 		static_cast<double>(roll_error * 180.0f / M_PI_F),
 		static_cast<double>(pitch_error * 180.0f / M_PI_F),
 		static_cast<double>(yaw_error * 180.0f / M_PI_F));
-
 
 	// 姿态偏差限幅（防止控制饱和）
 	roll_error = math::constrain(roll_error, -max_att_error, max_att_error);
@@ -863,7 +894,7 @@ void AttackVision::handle_guidance()
 		static_cast<double>(yaw_error * 180.0f / M_PI_F),
 		static_cast<double>(max_att_error * 180.0f / M_PI_F));
 
-	// ========== 3. 姿态控制律（比例控制） ==========
+	// ========== 4. 姿态控制律（比例控制） ==========
 	float target_roll = veh_roll+ att_kp * roll_error;
 	float target_pitch = veh_pitch + att_kp * pitch_error;
 	float target_yaw = veh_yaw + att_kp * yaw_error;
@@ -906,7 +937,7 @@ void AttackVision::handle_guidance()
 		PX4_WARN("偏航角被包装! 原始值%.2f°超出[-180°,180°]范围", static_cast<double>(target_yaw_before * 180.0f / M_PI_F));
 	}
 
-		// ========== 4. 获取前向速度（向目标靠近） ==========
+		// ========== 5. 获取前向速度（向目标靠近） ==========
 	// 前向速度沿无人机机头方向（NED坐标系转换）
 	vehicle_local_position_s local_pos{};
 	float vx_ned = 0.0f, vy_ned = 0.0f;
@@ -915,42 +946,14 @@ void AttackVision::handle_guidance()
 		// 机体系前向速度 -> NED坐标系速度
 		vx_ned = max_forward_v * cosf(yaw);
 		vy_ned = max_forward_v * sinf(yaw);
+		PX4_INFO("机头方向: 偏航角=%.2f°", static_cast<double>(yaw * 180.0f / M_PI_F));
+		PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
 	} else {
-		vx_ned = max_forward_v;  //  fallback：默认北向
+		// fallback：使用无人机姿态的偏航角
+		vx_ned = max_forward_v * cosf(veh_yaw);
+    		vy_ned = max_forward_v * sinf(veh_yaw);
+		PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
 	}
-
-	// ========== 5. 发布姿态+速度控制指令 ==========
-	// 发布Offboard控制模式（启用姿态+速度混合控制）
-	// offboard_control_mode_s ocm{};
-	// ocm.timestamp = hrt_absolute_time();
-	// ocm.position = false;
-	// ocm.velocity = true;   // 启用速度控制（前向靠近）
-	// ocm.attitude = true;   // 启用姿态控制（跟踪吊舱）
-	// ocm.body_rate = false;
-	// _offboard_ctrl_pub.publish(ocm);
-
-	// // 发布轨迹设定点（姿态+速度）
-	// trajectory_setpoint_s sp{};
-	// sp.timestamp = ocm.timestamp;
-	// // 位置：不控制（设为NaN）
-	// sp.position[0] = NAN;
-	// sp.position[1] = NAN;
-	// sp.position[2] = NAN;
-	// // 速度：前向靠近（NED坐标系）
-	// sp.velocity[0] = vx_ned;
-	// sp.velocity[1] = vy_ned;
-	// sp.velocity[2] = 0.0f;  // 垂直速度保持0（定高）
-	// // 姿态：跟踪吊舱
-	// sp.roll = target_roll;
-	// sp.pitch = target_pitch;
-	// sp.yaw = target_yaw;
-	// sp.yawspeed = target_yaw_rate;
-	// // 加速度：不控制
-	// sp.acceleration[0] = NAN;
-	// sp.acceleration[1] = NAN;
-	// sp.acceleration[2] = NAN;
-
-	// _traj_sp_pub.publish(sp);
 	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, target_yaw_rate);
 
 	// 调试输出
@@ -977,6 +980,19 @@ void AttackVision::publish_attitude_velocity_control(
 	float target_yaw, float vx_ned,
 	float vy_ned, float target_yaw_rate)
 {
+	// ========== 1. 打印输入参数（原始值+角度转换） ==========
+	PX4_INFO("===== 姿态+速度控制指令发布 =====");
+	PX4_INFO("输入参数");
+	PX4_INFO("目标姿态（弧度）: 横滚=%.4f, 俯仰=%.4f, 偏航=%.4f",
+		(double)target_roll, (double)target_pitch, (double)target_yaw);
+	PX4_INFO("目标姿态（角度）: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
+		(double)(target_roll * 180.0f / M_PI_F),
+		(double)(target_pitch * 180.0f / M_PI_F),
+		(double)(target_yaw * 180.0f / M_PI_F));
+	PX4_INFO("NED速度 : 北向=%.4fm/s, 东向=%.4fm/s, 垂向=0.0000m/s",
+		(double)vx_ned, (double)vy_ned);
+	PX4_INFO("偏航角速度: %.4frad/s (%.2f°/s)",
+		(double)target_yaw_rate, (double)(target_yaw_rate * 180.0f / M_PI_F));
 	// 发布Offboard控制模式（启用姿态+速度混合控制）
 	offboard_control_mode_s ocm{};
 	ocm.timestamp = hrt_absolute_time();
@@ -986,6 +1002,12 @@ void AttackVision::publish_attitude_velocity_control(
 	ocm.body_rate = false;
 	_offboard_ctrl_pub.publish(ocm);
 
+	PX4_INFO("Offboard控制模式");
+	PX4_INFO("时间戳: %lluus, 位置控制=%d, 速度控制=%d,",
+		(unsigned long long)ocm.timestamp,
+		ocm.position, ocm.velocity);
+	PX4_INFO("姿态控制=%d, 机体系速率控制=%d",
+		ocm.attitude, ocm.body_rate);
 	// 发布轨迹设定点（姿态+速度）
 	trajectory_setpoint_s sp{};
 	sp.timestamp = ocm.timestamp;
@@ -1001,6 +1023,8 @@ void AttackVision::publish_attitude_velocity_control(
 	sp.acceleration[0] = NAN;
 	sp.acceleration[1] = NAN;
 	sp.acceleration[2] = NAN;
+	sp.yaw = NAN;
+	sp.yawspeed = NAN;
 
 	_traj_sp_pub.publish(sp);
 
@@ -1008,7 +1032,16 @@ void AttackVision::publish_attitude_velocity_control(
 	vehicle_attitude_setpoint_s att_sp{};
 	att_sp.timestamp = ocm.timestamp;
 
-	// 方法A：使用四元数
+	PX4_INFO("轨迹设定点trajectory_setpoint");
+	PX4_INFO("时间戳: %lluus", (unsigned long long)sp.timestamp);
+	PX4_INFO("位置: X=%.4f, Y=%.4f, Z=%.4f (NaN=不控制)",
+		(double)sp.position[0], (double)sp.position[1], (double)sp.position[2]);
+	PX4_INFO("速度: Vx=%.4f, Vy=%.4f, Vz=%.4f (NED坐标系)",
+		(double)sp.velocity[0], (double)sp.velocity[1], (double)sp.velocity[2]);
+	PX4_INFO("加速度: Ax=%.4f, Ay=%.4f, Az=%.4f (NaN=不控制)",
+		(double)sp.acceleration[0], (double)sp.acceleration[1], (double)sp.acceleration[2]);
+
+	// // 方法A：使用四元数
 	matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(target_roll, target_pitch, target_yaw));
 	att_sp.q_d[0] = q_target(0);
 	att_sp.q_d[1] = q_target(1);
@@ -1017,6 +1050,42 @@ void AttackVision::publish_attitude_velocity_control(
 
 	att_sp.yaw_sp_move_rate = target_yaw_rate;
 	_att_sp_pub.publish(att_sp);
+
+	// 固定欧拉角：roll=0°, pitch=0°, yaw=45°（π/4弧度）
+	// const float fixed_roll = 0.0f;
+	// const float fixed_pitch = 0.0f;
+	// const float fixed_yaw = M_PI_4_F;  // 45度（NED坐标系，0=正北，45°=东北）
+	// const float fixed_yaw_rate = 0.0f; // 偏航角速度固定为0
+
+	// // 生成固定姿态的四元数
+	// matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(fixed_roll, fixed_pitch, fixed_yaw));
+	// att_sp.q_d[0] = q_target(0);
+	// att_sp.q_d[1] = q_target(1);
+	// att_sp.q_d[2] = q_target(2);
+	// att_sp.q_d[3] = q_target(3);
+
+	// att_sp.yaw_sp_move_rate = fixed_yaw_rate;
+	// _att_sp_pub.publish(att_sp);
+
+	matrix::Eulerf euler_back(q_target);
+	PX4_INFO("【姿态设定点（vehicle_attitude_setpoint）】");
+	PX4_INFO("  时间戳: %lluus", (unsigned long long)att_sp.timestamp);
+	PX4_INFO("  四元数: w=%.6f, x=%.6f, y=%.6f, z=%.6f",
+		(double)att_sp.q_d[0], (double)att_sp.q_d[1], (double)att_sp.q_d[2], (double)att_sp.q_d[3]);
+	PX4_INFO("  四元数回算欧拉角: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
+		(double)(euler_back.phi() * 180.0f / M_PI_F),
+		(double)(euler_back.theta() * 180.0f / M_PI_F),
+		(double)(euler_back.psi() * 180.0f / M_PI_F));
+	PX4_INFO("  偏航角速度设定: %.4frad/s (%.2f°/s)",
+		(double)att_sp.yaw_sp_move_rate, (double)(att_sp.yaw_sp_move_rate * 180.0f / M_PI_F));
+
+	// ========== 5. 关键校验：速度矢量方向 ==========
+	float speed_mag = sqrtf(vx_ned*vx_ned + vy_ned*vy_ned);
+	float speed_yaw = atan2f(vy_ned, vx_ned);  // 速度方向的偏航角（NED）
+	PX4_INFO("【速度矢量校验】");
+	PX4_INFO("  速度大小: %.2fm/s, 速度方向偏航角: %.2f° (正北=0°, 正东=90°)",
+		(double)speed_mag, (double)(speed_yaw * 180.0f / M_PI_F));
+	PX4_INFO("==========================================");
 
 }
 
@@ -1038,6 +1107,60 @@ void AttackVision::print_drone_status()
 	} else {
 		PX4_WARN("无法获取无人机位置信息");
 	}
+}
+
+/**
+ * @brief 仿真模式下切换到Offboard模式（跳过RC检测）
+ * @return true=切换成功，false=切换中或失败
+ */
+bool AttackVision::switch_to_offboard_sim()
+{
+	vehicle_status_s vs{};
+	if (!_vehicle_status_sub.copy(&vs)) {
+		PX4_WARN("无法获取vehicle_status");
+		return false;
+	}
+
+	PX4_INFO("仿真模式：当前状态: nav_state=%d, arming_state=%d", vs.nav_state, vs.arming_state);
+
+	// 检查是否已解锁
+	if (vs.arming_state != vehicle_status_s::ARMING_STATE_ARMED) {
+		PX4_WARN("飞控未解锁，无法切换到Offboard模式");
+		return false;
+	}
+
+	// 如果已经在Offboard模式
+	if (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+		PX4_INFO("已在Offboard模式");
+		return true;
+	}
+
+	// 限制命令发布频率
+	uint64_t now = hrt_absolute_time();
+	if (now - _last_cmd_publish_time < MIN_CMD_INTERVAL_US) {
+		return false;
+	}
+
+	PX4_INFO("仿真模式：发送切换到Offboard模式命令");
+
+	// 发送模式切换命令
+	vehicle_command_s cmd{};
+	cmd.timestamp = now;
+	cmd.param1 = (float)1;  // 主模式
+	cmd.param2 = (float)6;  // PX4_CUSTOM_MAIN_MODE_OFFBOARD
+	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
+	cmd.target_system = 1;
+	cmd.target_component = 1;
+	cmd.source_system = 1;
+	cmd.source_component = 1;
+	cmd.confirmation = 0;
+	cmd.from_external = false;
+
+	_vehicle_cmd_pub.publish(cmd);
+	_last_cmd_publish_time = now;
+
+	PX4_INFO("已发送切换到Offboard模式命令（仿真模式）");
+	return false;
 }
 
 
@@ -1090,101 +1213,172 @@ void AttackVision::Run()
 		return;
 	}
 
-	const uint64_t frame_timeout_us = 200000;  // 200ms超时
-	const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
-	static uint64_t last_status_time = 0;
-	static uint64_t last_control_time = 0;
-	static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
-	static int frame_count = 0;
+	// 在仿真模式下，跳过RC检测，直接进入Offboard
+	#ifdef __PX4_POSIX
+	PX4_INFO("Simulation Mode: Skipping RC detection, directly entering Offboard");
+	#endif
+
 
 	while (!should_exit()) {
 		// ========== 1. 优先解析RC模式（遥控器优先级最高） ==========
-		RCMode new_rc_mode = parse_rc_mode();
-		if (new_rc_mode != _current_rc_mode) {
-			PX4_INFO("RC mode changed: %d -> %d", (int)_current_rc_mode, (int)new_rc_mode);
-			_current_rc_mode = new_rc_mode;
+		// ========== 1. 仿真模式：跳过RC检测，直接设置为Offboard模式 ==========
+		#ifdef __PX4_POSIX
+		// 在仿真中，我们跳过RC检测，直接进入Offboard模式
+		_current_rc_mode = RCMode::MODE_OFFBOARD;
+		#else
+			RCMode new_rc_mode = parse_rc_mode();
+			if (new_rc_mode != _current_rc_mode) {
+				PX4_INFO("RC mode changed: %d -> %d", (int)_current_rc_mode, (int)new_rc_mode);
+				_current_rc_mode = new_rc_mode;
 
-			// RC切换出Offboard档位：立即退出Offboard，切换到对应RC模式
-			if (_current_rc_mode != RCMode::MODE_OFFBOARD && _module_state != ModuleState::HOLD) {
-				PX4_INFO("RC switch out of Offboard, stop guidance");
-				switch_to_rc_mode(_current_rc_mode);
+				// RC切换出Offboard档位：立即退出Offboard，切换到对应RC模式
+				if (_current_rc_mode != RCMode::MODE_OFFBOARD && _module_state != ModuleState::HOLD) {
+					PX4_INFO("RC switch out of Offboard, stop guidance");
+					switch_to_rc_mode(_current_rc_mode);
+					_module_state = ModuleState::HOLD;
+					_switch_start_time = 0;
+				}
+			}
+		#endif
+
+		#ifdef __PX4_POSIX
+			// ========== 3. 获取飞控状态 ==========
+			const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
+			static uint64_t last_status_time = 0;
+			static uint64_t last_control_time = 0;
+			static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
+
+			vehicle_status_s vehicle_status{};
+			bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
+
+			uint64_t now = hrt_absolute_time();
+			bool need_control_publish = (now - last_control_time > control_timeout_us);
+			// ========== 4. 末制导逻辑（在仿真中直接执行，跳过RC检查） ==========
+			// 仿真模式：直接进入Offboard并执行控制
+			if (has_vehicle_status) {
+			if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+				// 飞控已解锁，尝试进入/保持Offboard
+				if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+				// 已在Offboard模式，执行制导
+				if (_module_state != ModuleState::OFFBOARD) {
+					PX4_INFO("已进入Offboard模式 - 开始固定偏航45度控制（仿真模式）");
+					_module_state = ModuleState::OFFBOARD;
+				}
+				// 持续发布控制指令（满足Offboard最低频率要求）
+				if (need_control_publish) {
+					handle_guidance();
+					last_control_time = now;
+				}
+				} else {
+				// 不在Offboard模式，尝试切换
+				if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
+					PX4_INFO("仿真模式：尝试切换到Offboard模式");
+					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+					_switch_start_time = now;
+
+					// 关键：在切换模式前先发布控制信号
+					PX4_INFO("先发布零速度控制信号以满足PX4要求");
+					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+					last_control_time = now;
+				}
+
+				// 仿真模式下直接切换到Offboard
+				if (switch_to_offboard_sim()) {
+					_module_state = ModuleState::OFFBOARD;
+				}
+				}
+			} else {
+				PX4_WARN("飞控未解锁，无法进入Offboard模式");
+				if (_module_state != ModuleState::HOLD) {
 				_module_state = ModuleState::HOLD;
+				}
 				_switch_start_time = 0;
 			}
-		}
-
-		// ========== 2. 读取并解析吊舱帧数据 ==========
-		if (try_read_frame()) {
-		// 成功读取到一帧数据
-			if (frame_count < 10) {
-				PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
-					frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-				frame_count++;
 			}
-		}
+		#else
+			const uint64_t frame_timeout_us = 200000;  // 200ms超时
+			const uint64_t control_timeout_us = 50000; // 50ms控制信号超时（20Hz）
+			static uint64_t last_status_time = 0;
+			static uint64_t last_control_time = 0;
+			static uint64_t last_drone_status_time = 0; // 无人机状态打印计时器
+			static int frame_count = 0;
 
-		// ========== 3. 获取飞控状态 ==========
-		vehicle_status_s vehicle_status{};
-		bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
+			// ========== 2. 读取并解析吊舱帧数据 ==========
+			if (try_read_frame()) {
+			// 成功读取到一帧数据
+				if (frame_count < 10) {
+					PX4_INFO("成功解析帧 %d: lock=%d, pix=(%d,%d)",
+						frame_count, (int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+					frame_count++;
+				}
+			}
 
-		// 制导逻辑
-		bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
+			// ========== 3. 获取飞控状态 ==========
+			vehicle_status_s vehicle_status{};
+			bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
 
-		// 关键修改：在Offboard模式下必须持续发布控制信号
-		uint64_t now = hrt_absolute_time();
-		bool need_control_publish = (now - last_control_time > control_timeout_us);
+			// 制导逻辑
+			bool frame_valid_recent = (hrt_absolute_time() - _last_frame_time_us) < frame_timeout_us;
 
-		// ========== 4. 末制导逻辑（仅当RC在Offboard档位时执行） ==========
-		if (_current_rc_mode == RCMode::MODE_OFFBOARD) { // 遥控器授权Offboard
-			if (_lock_active && frame_valid_recent && has_vehicle_status) {
-				if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
-				// 飞控已解锁，尝试进入/保持Offboard
-					if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
-					// 已在Offboard模式，执行制导
-						if (_module_state != ModuleState::OFFBOARD) {
-							PX4_INFO("已进入Offboard模式 - 开始末制导（RC授权）");
-							_module_state = ModuleState::OFFBOARD;
-						}
-						// 持续发布控制指令（满足Offboard最低频率要求）
-						if (need_control_publish) {
-							handle_guidance();
-							last_control_time = now;
+			// 关键修改：在Offboard模式下必须持续发布控制信号
+			uint64_t now = hrt_absolute_time();
+			bool need_control_publish = (now - last_control_time > control_timeout_us);
+
+			// ========== 4. 末制导逻辑（仅当RC在Offboard档位时执行） ==========
+			if (_current_rc_mode == RCMode::MODE_OFFBOARD) { // 遥控器授权Offboard
+				if (_lock_active && frame_valid_recent && has_vehicle_status) {
+					if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+					// 飞控已解锁，尝试进入/保持Offboard
+						if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+						// 已在Offboard模式，执行制导
+							if (_module_state != ModuleState::OFFBOARD) {
+								PX4_INFO("已进入Offboard模式 - 开始末制导（RC授权）");
+								_module_state = ModuleState::OFFBOARD;
+							}
+							// 持续发布控制指令（满足Offboard最低频率要求）
+							if (need_control_publish) {
+								handle_guidance();
+								last_control_time = now;
+							}
+						} else {
+						// 不在Offboard模式，尝试切换
+							if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
+								PX4_INFO("RC授权Offboard，尝试切换模式（锁定目标）");
+								_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+
+								_switch_start_time = now;
+								// 关键：在切换模式前先发布控制信号
+								PX4_INFO("先发布零速度控制信号以满足PX4要求");
+								publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+								last_control_time = now;
+							}
+							switch_to_offboard();
 						}
 					} else {
-					// 不在Offboard模式，尝试切换
-						if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
-							PX4_INFO("RC授权Offboard，尝试切换模式（锁定目标）");
-							_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-
-							_switch_start_time = now;
-							// 关键：在切换模式前先发布控制信号
-							PX4_INFO("先发布零速度控制信号以满足PX4要求");
-							publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-							last_control_time = now;
+						PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
+						if (_module_state != ModuleState::HOLD) {
+							_module_state = ModuleState::HOLD;
 						}
-						switch_to_offboard();
+						// 重置切换计时器
+						_switch_start_time = 0;
 					}
 				} else {
-					PX4_WARN("目标已锁定但飞控未解锁，无法进入Offboard模式");
+					// 吊舱失锁/数据超时：退出Offboard，切换到悬停
 					if (_module_state != ModuleState::HOLD) {
+						PX4_INFO("吊舱状态异常，退出Offboard（RC仍在Offboard档位）");
+						switch_to_hold();
 						_module_state = ModuleState::HOLD;
 					}
 					// 重置切换计时器
 					_switch_start_time = 0;
 				}
 			} else {
-				// 吊舱失锁/数据超时：退出Offboard，切换到悬停
-				if (_module_state != ModuleState::HOLD) {
-					PX4_INFO("吊舱状态异常，退出Offboard（RC仍在Offboard档位）");
-					switch_to_hold();
-					_module_state = ModuleState::HOLD;
-				}
-				// 重置切换计时器
-				_switch_start_time = 0;
+				// RC不在Offboard档位：强制退出Offboard（已在RC解析阶段处理）
 			}
-		} else {
-			// RC不在Offboard档位：强制退出Offboard（已在RC解析阶段处理）
-		}
+
+		#endif
+
+
 
 		// ========== 5. 状态打印（保持原有逻辑） ==========
 		if (now - last_status_time > 5000000) {
