@@ -137,8 +137,9 @@ private:
 	void close_uart();
 	void print_drone_status();
 	void publish_attitude_velocity_control(float target_roll, float target_pitch,
-	float target_yaw, float vx_ned,
-	float vy_ned, float target_yaw_rate);
+						float target_yaw, float vx_ned,
+						float vy_ned, float vz_ned,
+						float target_yaw_rate);
 	bool switch_to_offboard_sim();  ///< 仿真模式下切换到Offboard模式（直接执行，跳过RC检查）
 
 	// ========== uORB话题订阅和发布 ==========

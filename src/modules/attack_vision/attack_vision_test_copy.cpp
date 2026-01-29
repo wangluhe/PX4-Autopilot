@@ -938,8 +938,6 @@ void AttackVision::publish_attitude_velocity_control(
 	// ========== 1. 打印输入参数（原始值+角度转换） ==========
 	PX4_INFO("===== 姿态+速度控制指令发布 =====");
 	PX4_INFO("输入参数");
-	PX4_INFO("目标姿态（弧度）: 横滚=%.4f, 俯仰=%.4f, 偏航=%.4f",
-		(double)target_roll, (double)target_pitch, (double)target_yaw);
 	PX4_INFO("目标姿态（角度）: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
 		(double)(target_roll * 180.0f / M_PI_F),
 		(double)(target_pitch * 180.0f / M_PI_F),
@@ -1158,6 +1156,10 @@ void AttackVision::Run()
 			_fixed_gimbal_roll_ned = random_roll * M_PI_F / 180.0f;
 			_fixed_gimbal_pitch_ned = random_pitch * M_PI_F / 180.0f;
 			_fixed_gimbal_yaw_ned = random_yaw * M_PI_F / 180.0f;
+
+			_fixed_gimbal_roll_ned = 0;
+			_fixed_gimbal_pitch_ned = 0;
+			_fixed_gimbal_yaw_ned = M_PI_4_F;
 
 			// 3. 打印固定目标姿态
 			PX4_INFO("【仿真模式】固定吊舱NED目标姿态初始化:");
