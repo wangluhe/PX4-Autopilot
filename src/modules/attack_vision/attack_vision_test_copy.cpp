@@ -860,6 +860,7 @@ void AttackVision::handle_guidance()
 			static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
 		}
 		target_att_debug_count++;
+		matrix::Quatf q_gimbal_ned = matrix::Quatf(matrix::Eulerf(gimbal_roll_ned, gimbal_pitch_ned, gimbal_yaw_ned));
 
 	#else
 		// 硬件模式：使用原来的逻辑（吊舱相对姿态转换）
@@ -872,32 +873,41 @@ void AttackVision::handle_guidance()
 		float gimbal_roll_ned = euler_gimbal_ned.phi();
 		float gimbal_pitch_ned = euler_gimbal_ned.theta();
 		float gimbal_yaw_ned = euler_gimbal_ned.psi();
+		// 打印吊舱姿态（调试用）
+		PX4_INFO("吊舱姿态: 机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
+			static_cast<double>(_gimbal_roll) * 180.0 / M_PI,
+			static_cast<double>(_gimbal_pitch) * 180.0 / M_PI,
+			static_cast<double>(_gimbal_yaw) * 180.0 / M_PI);
 	#endif
 
 	// ========== 2. 计算姿态偏差（吊舱姿态 - 无人机姿态） ==========
-	// ========== 2. 将吊舱姿态从机体坐标系转换到NED坐标系 ==========
-	// 吊舱姿态相对于机体的欧拉角（机体坐标系
-	// matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
-	// matrix::Quatf q_gimbal_body(gimbal_body);
-
-	// // 机体坐标系到NED坐标系的变换就是无人机的姿态四元数
-	// // 吊舱NED姿态 = 无人机NED姿态 × 吊舱相对于机体的姿态
-	// matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body;
-	// matrix::Eulerf euler_gimbal_ned(q_gimbal_ned);
-
-	// float gimbal_roll_ned = euler_gimbal_ned.phi();
-	// float gimbal_pitch_ned = euler_gimbal_ned.theta();
-	// float gimbal_yaw_ned = euler_gimbal_ned.psi();
-
-	// 打印吊舱姿态（调试用）
-	// PX4_INFO("吊舱姿态: 机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
-	// 	static_cast<double>(_gimbal_roll) * 180.0 / M_PI,
-	// 	static_cast<double>(_gimbal_pitch) * 180.0 / M_PI,
-	// 	static_cast<double>(_gimbal_yaw) * 180.0 / M_PI);
 	PX4_INFO("吊舱姿态: NED系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
 		static_cast<double>(gimbal_roll_ned) * 180.0 / M_PI,
 		static_cast<double>(gimbal_pitch_ned) * 180.0 / M_PI,
 		static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
+
+	// ========关键修改 =================关键修改===============
+	// 首先，获取吊舱的NED四元数 q_gimbal_ned
+	 // 吊舱在自身坐标系中的前向向量（假设X轴为前向）
+	matrix::Vector3f forward_vec_body(1.0f, 0.0f, 0.0f);
+	// 将前向向量从吊舱坐标系旋转到NED坐标系
+	matrix::Vector3f forward_vec_ned = q_gimbal_ned.rotateVector(forward_vec_body);
+	// 归一化前向向量
+	forward_vec_ned.normalize();
+	// 速度向量 = 归一化的前向向量 × 速度大小
+	matrix::Vector3f velocity_ned = forward_vec_ned * max_forward_v;
+	// 获取速度分量
+	float vx_ned = velocity_ned(0);  // 北向分量
+	float vy_ned = velocity_ned(1);  // 东向分量
+	float vz_ned = velocity_ned(2);  // 垂向分量（向下为正）
+
+	PX4_INFO("吊舱指向向量: 北=%.2f, 东=%.2f, 垂=%.2f",
+		static_cast<double>(forward_vec_ned(0)),
+		static_cast<double>(forward_vec_ned(1)),
+		static_cast<double>(forward_vec_ned(2)));
+
+	PX4_INFO("速度向量: 北=%.2fm/s, 东=%.2fm/s, 垂=%.2fm/s",
+		static_cast<double>(vx_ned), static_cast<double>(vy_ned), static_cast<double>(vz_ned));
 
 	// ========== 3. 计算姿态偏差（吊舱NED姿态 - 无人机NED姿态） ==========
 	//弧度
@@ -932,9 +942,6 @@ void AttackVision::handle_guidance()
 
 	PX4_INFO("姿态控制限幅前: 滚=%.2f°, 俯=%.2f°, 偏=%.2f°",
 		static_cast<double>(target_roll * 180.0f / M_PI_F),
-		// static_cast<double>(veh_roll * 180.0f / M_PI_F),
-		// static_cast<double>(roll_error * 180.0f / M_PI_F),
-		// static_cast<double>(att_kp),
 		static_cast<double>(target_pitch * 180.0f / M_PI_F),
 		static_cast<double>(target_yaw * 180.0f / M_PI_F));
 
@@ -966,21 +973,21 @@ void AttackVision::handle_guidance()
 
 		// ========== 5. 获取前向速度（向目标靠近） ==========
 	// 前向速度沿无人机机头方向（NED坐标系转换）
-	vehicle_local_position_s local_pos{};
-	float vx_ned = 0.0f, vy_ned = 0.0f;
-	if (_vehicle_local_position_sub.copy(&local_pos)) {
-		float yaw = local_pos.heading;
-		// 机体系前向速度 -> NED坐标系速度
-		vx_ned = max_forward_v * cosf(yaw);
-		vy_ned = max_forward_v * sinf(yaw);
-		PX4_INFO("机头方向: 偏航角=%.2f°", static_cast<double>(yaw * 180.0f / M_PI_F));
-		PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
-	} else {
-		// fallback：使用无人机姿态的偏航角
-		vx_ned = max_forward_v * cosf(veh_yaw);
-    		vy_ned = max_forward_v * sinf(veh_yaw);
-		PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
-	}
+	// vehicle_local_position_s local_pos{};
+	// float vx_ned = 0.0f, vy_ned = 0.0f;
+	// if (_vehicle_local_position_sub.copy(&local_pos)) {
+	// 	float yaw = local_pos.heading;
+	// 	// 机体系前向速度 -> NED坐标系速度
+	// 	vx_ned = max_forward_v * cosf(yaw);
+	// 	vy_ned = max_forward_v * sinf(yaw);
+	// 	PX4_INFO("机头方向: 偏航角=%.2f°", static_cast<double>(yaw * 180.0f / M_PI_F));
+	// 	PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
+	// } else {
+	// 	// fallback：使用无人机姿态的偏航角
+	// 	vx_ned = max_forward_v * cosf(veh_yaw);
+    	// 	vy_ned = max_forward_v * sinf(veh_yaw);
+	// 	PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
+	// }
 	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, target_yaw_rate);
 
 	// 调试输出
