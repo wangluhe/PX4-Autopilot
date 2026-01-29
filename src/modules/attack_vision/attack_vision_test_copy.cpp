@@ -805,12 +805,17 @@ void AttackVision::handle_guidance()
 		matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
 		matrix::Quatf q_gimbal_body(gimbal_body);
 
-		matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body;
+		// 基于吊舱真实的三个姿态解算NED坐标
+		// matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body;
+		// 给一个固定的NED目标姿态
+		matrix::Quatf q_gimbal_ned = matrix::Quatf(matrix::Eulerf(0, 0, M_PI_4_F));
 		matrix::Eulerf euler_gimbal_ned(q_gimbal_ned);
 
 		float gimbal_roll_ned = euler_gimbal_ned.phi();
 		float gimbal_pitch_ned = euler_gimbal_ned.theta();
 		float gimbal_yaw_ned = euler_gimbal_ned.psi();
+
+
 		// 打印吊舱姿态（调试用）
 		PX4_INFO("吊舱姿态: 机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
 			static_cast<double>(_gimbal_roll) * 180.0 / M_PI,
@@ -874,7 +879,7 @@ void AttackVision::handle_guidance()
 	// ========== 4. 姿态控制律（比例控制） ==========
 	float target_roll = veh_roll+ att_kp * roll_error;
 	float target_pitch = veh_pitch + att_kp * pitch_error;
-	float target_yaw = veh_yaw + att_kp * yaw_error;
+	float target_yaw = veh_yaw + att_kp * yaw_error*3;
 	float target_yaw_rate = 0.0f;  // 偏航角速度保持0（跟随姿态即可）
 
 	PX4_INFO("姿态控制限幅前: 滚=%.2f°, 俯=%.2f°, 偏=%.2f°",
@@ -1159,7 +1164,7 @@ void AttackVision::Run()
 
 			_fixed_gimbal_roll_ned = 0;
 			_fixed_gimbal_pitch_ned = 0;
-			_fixed_gimbal_yaw_ned = M_PI_4_F;
+			_fixed_gimbal_yaw_ned = M_PI_4_F+M_PI_2_F/3.0f;
 
 			// 3. 打印固定目标姿态
 			PX4_INFO("【仿真模式】固定吊舱NED目标姿态初始化:");

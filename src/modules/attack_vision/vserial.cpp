@@ -22,7 +22,15 @@ int VSerial::init()
 
 	// 使用当前时间作为随机种子，确保每次运行都不同
 	uint64_t seed = hrt_absolute_time();
-	_random_engine.seed(static_cast<unsigned int>(seed));
+	// _random_engine.seed(static_cast<unsigned int>(seed));
+	#ifdef __PX4_POSIX
+		// SITL环境使用标准库
+		_random_engine.seed(static_cast<unsigned int>(seed));
+	#else
+		// 嵌入式环境使用标准C库
+		srand(static_cast<unsigned int>(seed & 0xFFFFFFFF));
+	#endif
+
 
 	// 生成随机姿态角度
 	generate_random_attitude();
@@ -44,9 +52,18 @@ int VSerial::init()
 
 void VSerial::generate_random_attitude()
 {
-	_random_roll_deg100 = _roll_distribution(_random_engine);
-	_random_pitch_deg100 = _pitch_distribution(_random_engine);
-	_random_yaw_deg100 = _yaw_distribution(_random_engine);
+	#ifdef __PX4_POSIX
+		// SITL/桌面环境
+		_random_roll_deg100 = _roll_distribution(_random_engine);
+		_random_pitch_deg100 = _pitch_distribution(_random_engine);
+		_random_yaw_deg100 = _yaw_distribution(_random_engine);
+	#else
+		// NuttX/嵌入式环境
+		// 生成-30° ~ 30°的随机角度（单位0.01度）
+		_random_roll_deg100 = generate_random_int16(-3000, 3000);
+		_random_pitch_deg100 = generate_random_int16(-3000, 3000);
+		_random_yaw_deg100 = generate_random_int16(-18000, 18000);
+	#endif
 }
 
 // 新增：获取当前随机生成的吊舱姿态

@@ -4,7 +4,16 @@
 #include <px4_platform_common/module.h>
 #include <drivers/drv_hrt.h>
 #include <string.h>
-#include <random>
+// #include <random>
+
+// 根据编译目标选择不同的随机数生成方式
+#ifdef __PX4_NUTTX
+    	// NuttX/嵌入式环境
+	#include <stdlib.h>
+#else
+	// SITL/桌面环境
+	#include <random>
+#endif
 
 class VSerial
 {
@@ -55,11 +64,20 @@ private:
 	int16_t _random_pitch_deg100{0};
 	int16_t _random_yaw_deg100{0};
 
-	// 新增：随机数生成器
-	std::default_random_engine _random_engine;
-	std::uniform_int_distribution<int16_t> _roll_distribution{-3000, 3000};   // -30° ~ 30°
-	std::uniform_int_distribution<int16_t> _pitch_distribution{-3000, 3000};  // -30° ~ 30°
-	std::uniform_int_distribution<int16_t> _yaw_distribution{-18000, 18000};       // 0° ~ 360°
+	#ifdef __PX4_POSIX
+		// 新增：随机数生成器
+		std::default_random_engine _random_engine;
+		std::uniform_int_distribution<int16_t> _roll_distribution{-3000, 3000};   // -30° ~ 30°
+		std::uniform_int_distribution<int16_t> _pitch_distribution{-3000, 3000};  // -30° ~ 30°
+		std::uniform_int_distribution<int16_t> _yaw_distribution{-18000, 18000};       // 0° ~ 360°
+	#else
+		// 新增一个简单的随机数生成函数
+		int16_t generate_random_int16(int16_t min, int16_t max){
+			// 使用PX4的随机数生成，或者使用简单的伪随机
+			// 注意：这只是一个示例，可能需要更好的随机性
+			return min + (rand() % (max - min + 1));
+		}
+	#endif
 
 
 	// 闭环控制参数
