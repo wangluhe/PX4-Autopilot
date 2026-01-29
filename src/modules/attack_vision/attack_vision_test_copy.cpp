@@ -908,7 +908,7 @@ void AttackVision::handle_guidance()
 		PX4_WARN("偏航角被包装! 原始值%.2f°超出[-180°,180°]范围", static_cast<double>(target_yaw_before * 180.0f / M_PI_F));
 	}
 
-	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, target_yaw_rate);
+	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, vz_ned, target_yaw_rate);
 
 	// 调试输出
 	PX4_INFO("姿态跟踪: 目标(滚=%.2f°, 俯=%.2f°, 偏=%.2f°) | 速度(前向=%.2fm/s)",
@@ -932,7 +932,8 @@ void AttackVision::handle_guidance()
 void AttackVision::publish_attitude_velocity_control(
 	float target_roll, float target_pitch,
 	float target_yaw, float vx_ned,
-	float vy_ned, float target_yaw_rate)
+	float vy_ned, float vz_ned,
+	float target_yaw_rate)
 {
 	// ========== 1. 打印输入参数（原始值+角度转换） ==========
 	PX4_INFO("===== 姿态+速度控制指令发布 =====");
@@ -972,31 +973,19 @@ void AttackVision::publish_attitude_velocity_control(
 	// 速度：前向靠近（NED坐标系）
 	sp.velocity[0] = vx_ned;
 	sp.velocity[1] = vy_ned;
-	sp.velocity[2] = 0.0f;  // 垂直速度保持0（定高）
+	sp.velocity[2] = vz_ned;  // 垂直速度
 	// 加速度：不控制
 	sp.acceleration[0] = NAN;
 	sp.acceleration[1] = NAN;
 	sp.acceleration[2] = NAN;
 	sp.yaw = NAN;
 	sp.yawspeed = NAN;
-
 	_traj_sp_pub.publish(sp);
-
 
 	vehicle_attitude_setpoint_s att_sp{};
 	att_sp.timestamp = ocm.timestamp;
 
-	PX4_INFO("轨迹设定点trajectory_setpoint");
-	PX4_INFO("时间戳: %lluus", (unsigned long long)sp.timestamp);
-	PX4_INFO("位置: X=%.4f, Y=%.4f, Z=%.4f (NaN=不控制)",
-		(double)sp.position[0], (double)sp.position[1], (double)sp.position[2]);
-	PX4_INFO("速度: Vx=%.4f, Vy=%.4f, Vz=%.4f (NED坐标系)",
-		(double)sp.velocity[0], (double)sp.velocity[1], (double)sp.velocity[2]);
-	PX4_INFO("加速度: Ax=%.4f, Ay=%.4f, Az=%.4f (NaN=不控制)",
-		(double)sp.acceleration[0], (double)sp.acceleration[1], (double)sp.acceleration[2]);
-
-	// // 方法A：使用四元数
-	matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(target_roll, target_pitch, target_yaw));
+	matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(0, 0, target_yaw));
 	att_sp.q_d[0] = q_target(0);
 	att_sp.q_d[1] = q_target(1);
 	att_sp.q_d[2] = q_target(2);
@@ -1004,22 +993,6 @@ void AttackVision::publish_attitude_velocity_control(
 
 	att_sp.yaw_sp_move_rate = target_yaw_rate;
 	_att_sp_pub.publish(att_sp);
-
-	// 固定欧拉角：roll=0°, pitch=0°, yaw=45°（π/4弧度）
-	// const float fixed_roll = 0.0f;
-	// const float fixed_pitch = 0.0f;
-	// const float fixed_yaw = M_PI_4_F;  // 45度（NED坐标系，0=正北，45°=东北）
-	// const float fixed_yaw_rate = 0.0f; // 偏航角速度固定为0
-
-	// // 生成固定姿态的四元数
-	// matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(fixed_roll, fixed_pitch, fixed_yaw));
-	// att_sp.q_d[0] = q_target(0);
-	// att_sp.q_d[1] = q_target(1);
-	// att_sp.q_d[2] = q_target(2);
-	// att_sp.q_d[3] = q_target(3);
-
-	// att_sp.yaw_sp_move_rate = fixed_yaw_rate;
-	// _att_sp_pub.publish(att_sp);
 
 	matrix::Eulerf euler_back(q_target);
 	PX4_INFO("【姿态设定点（vehicle_attitude_setpoint）】");
