@@ -724,68 +724,6 @@ void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float
 
 }
 
-
-/**
- * @brief 处理制导逻辑
- *
- * 新的控制策略：
- * - 方向偏差（pix_offset_x）控制横向速度（vy）
- * - 俯仰偏差（pix_offset_y）控制垂直速度（vz）
- * - 前向保持恒定速度（vx）
- * - 偏航角速度保持为0（保持当前航向）
- */
-// void AttackVision::handle_guidance()
-// {
-// 	const float kp = _param_av_kp.get();      // 速度控制增益（m/s每像素）
-// 	const float dead = _param_av_dead.get();  // 像素死区
-// 	const float maxv = _param_av_max_v.get(); // 最大速度限制
-
-// 	// 参数合理性检查
-// 	if (!PX4_ISFINITE(kp) || !PX4_ISFINITE(dead) || !PX4_ISFINITE(maxv)) {
-// 		PX4_ERR("参数无效，停止制导");
-// 		return;
-// 	}
-
-// 	float ex = (float)_pix_offset_x;  // 方位方向像素偏差 -> 控制横向
-// 	float ey = (float)_pix_offset_y;  // 俯仰方向像素偏差 -> 控制垂直
-
-// 	if (PX4_ISFINITE(ex) && PX4_ISFINITE(ey)) {
-// 		// 应用死区：小于死区阈值时清零
-// 		if (fabsf(ex) < dead) ex = 0.f;
-// 		if (fabsf(ey) < dead) ey = 0.f;
-
-// 		// 计算机体系速度（你的逻辑）
-// 		float vx_body = _forward_velocity;  // 机头方向
-// 		float vy_body = -math::constrain(kp * ex, -maxv, maxv);  // 右侧方向
-// 		float vz_body = -math::constrain(kp * ey, -maxv, maxv);  // 向下方向
-
-// 		// 获取当前偏航角（航向）
-// 		vehicle_local_position_s local_pos{};
-// 		if (_vehicle_local_position_sub.copy(&local_pos)) {
-// 		float yaw = local_pos.heading; // 当前偏航角（弧度）
-
-// 		// 将机体系速度转换为NED坐标系速度
-// 		// v_north = vx_body * cos(yaw) - vy_body * sin(yaw)
-// 		// v_east  = vx_body * sin(yaw) + vy_body * cos(yaw)
-// 		float v_north = vx_body * cosf(yaw) - vy_body * sinf(yaw);
-// 		float v_east  = vx_body * sinf(yaw) + vy_body * cosf(yaw);
-
-// 		// 第671-675行修改为：
-// 		PX4_INFO("机体系->NED转换: 偏航=%.1f°, 机体系(%.2f,%.2f,%.2f) -> NED(%.2f,%.2f,%.2f)",
-// 		(double)(yaw * 180.0f / M_PI_F),
-// 		(double)vx_body, (double)vy_body, (double)vz_body,
-// 		(double)v_north, (double)v_east, (double)vz_body);
-
-// 		// 发布NED坐标系速度
-// 		publish_offboard_velocity(v_north, v_east, vz_body, 0.0f);
-// 		} else {
-// 			PX4_WARN("无法获取偏航角，使用默认北向");
-// 			publish_offboard_velocity(vx_body, 0.0f, 0.0f, 0.0f);
-// 		}
-// 	}
-// }
-
-
 // 工具函数：四元数转欧拉角（FRD->NED，单位：弧度）
 // q: [w, x, y, z] 四元数
 // 返回：roll(横滚), pitch(俯仰), yaw(偏航)
@@ -905,7 +843,6 @@ void AttackVision::handle_guidance()
 		static_cast<double>(forward_vec_ned(0)),
 		static_cast<double>(forward_vec_ned(1)),
 		static_cast<double>(forward_vec_ned(2)));
-
 	PX4_INFO("速度向量: 北=%.2fm/s, 东=%.2fm/s, 垂=%.2fm/s",
 		static_cast<double>(vx_ned), static_cast<double>(vy_ned), static_cast<double>(vz_ned));
 
@@ -971,23 +908,6 @@ void AttackVision::handle_guidance()
 		PX4_WARN("偏航角被包装! 原始值%.2f°超出[-180°,180°]范围", static_cast<double>(target_yaw_before * 180.0f / M_PI_F));
 	}
 
-		// ========== 5. 获取前向速度（向目标靠近） ==========
-	// 前向速度沿无人机机头方向（NED坐标系转换）
-	// vehicle_local_position_s local_pos{};
-	// float vx_ned = 0.0f, vy_ned = 0.0f;
-	// if (_vehicle_local_position_sub.copy(&local_pos)) {
-	// 	float yaw = local_pos.heading;
-	// 	// 机体系前向速度 -> NED坐标系速度
-	// 	vx_ned = max_forward_v * cosf(yaw);
-	// 	vy_ned = max_forward_v * sinf(yaw);
-	// 	PX4_INFO("机头方向: 偏航角=%.2f°", static_cast<double>(yaw * 180.0f / M_PI_F));
-	// 	PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
-	// } else {
-	// 	// fallback：使用无人机姿态的偏航角
-	// 	vx_ned = max_forward_v * cosf(veh_yaw);
-    	// 	vy_ned = max_forward_v * sinf(veh_yaw);
-	// 	PX4_INFO("前向速度: NED(%.2fm/s, %.2fm/s)", static_cast<double>(vx_ned), static_cast<double>(vy_ned));
-	// }
 	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, target_yaw_rate);
 
 	// 调试输出
@@ -1251,34 +1171,6 @@ void AttackVision::Run()
 	#ifdef __PX4_POSIX
 		PX4_INFO("Simulation Mode: Skipping RC detection, directly entering Offboard");
 	#endif
-
-	// // 在AttackVision::Run()函数中，添加以下代码段：
-	// #ifdef __PX4_POSIX
-	// 	if (!_virtual_gimbal_initialized) {
-	// 		float v_roll, v_pitch, v_yaw;
-	// 		VSerial::get_instance().get_gimbal_attitude(v_roll, v_pitch, v_yaw);
-
-	// 		// 打印并存储固定的随机姿态
-	// 		PX4_INFO("【仿真模式】虚拟吊舱固定随机姿态初始化:");
-	// 		PX4_INFO("  - 方位角: %.2f° (偏航)", (double)v_yaw);
-	// 		PX4_INFO("  - 俯仰角: %.2f°", (double)v_pitch);
-	// 		PX4_INFO("  - 横滚角: %.2f°", (double)v_roll);
-	// 		PX4_INFO("注意：此姿态将在本次运行的整个过程中保持不变");
-
-	// 		// 转换为弧度并存储（固定值）
-	// 		_gimbal_roll = v_roll * M_PI_F / 180.0f;
-	// 		_gimbal_pitch = v_pitch * M_PI_F / 180.0f;
-	// 		_gimbal_yaw = v_yaw * M_PI_F / 180.0f;
-
-	// 		_virtual_gimbal_initialized = true;
-
-	// 		// 打印转换后的弧度值
-	// 		PX4_INFO("转换为弧度:");
-	// 		PX4_INFO("  - 方位角: %.6f rad", (double)_gimbal_yaw);
-	// 		PX4_INFO("  - 俯仰角: %.6f rad", (double)_gimbal_pitch);
-	// 		PX4_INFO("  - 横滚角: %.6f rad", (double)_gimbal_roll);
-	// 	}
-	// #endif
 
 
 	#ifdef __PX4_POSIX
