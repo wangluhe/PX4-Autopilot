@@ -53,6 +53,14 @@ public:
 	void Run() override;
 
 private:
+	#ifdef __PX4_POSIX
+		bool _virtual_gimbal_initialized{false};
+		// 新增：固定的吊舱NED目标姿态（用于仿真）
+		float _fixed_gimbal_roll_ned{0.0f};     // NED坐标系横滚角（弧度）
+		float _fixed_gimbal_pitch_ned{0.0f};    // NED坐标系俯仰角（弧度）
+		float _fixed_gimbal_yaw_ned{0.0f};      // NED坐标系偏航角（弧度）
+	#endif
+
 
 	// ========== 新增：RC遥控器相关 ==========
 	enum class RCMode {

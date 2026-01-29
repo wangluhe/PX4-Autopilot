@@ -20,14 +20,43 @@ int VSerial::init()
 		return 0;
 	}
 
-	// 在SITL模式下，我们模拟一个虚拟串口
+	// 使用当前时间作为随机种子，确保每次运行都不同
+	uint64_t seed = hrt_absolute_time();
+	_random_engine.seed(static_cast<unsigned int>(seed));
+
+	// 生成随机姿态角度
+	generate_random_attitude();
+
+    	// 在SITL模式下，我们模拟一个虚拟串口
 	_initialized = true;
 	_last_sim_time = hrt_absolute_time();
 	_last_control_time = _last_sim_time;
 
 	PX4_INFO("Virtual serial port initialized for SITL simulation");
+
+	PX4_INFO("随机吊舱姿态: 横滚=%.2f°, 俯仰=%.2f°, 方位=%.2f°",
+        static_cast<double>(_random_roll_deg100) / 100.0,
+        static_cast<double>(_random_pitch_deg100) / 100.0,
+        static_cast<double>(_random_yaw_deg100) / 100.0);
+
 	return 0;
 }
+
+void VSerial::generate_random_attitude()
+{
+	_random_roll_deg100 = _roll_distribution(_random_engine);
+	_random_pitch_deg100 = _pitch_distribution(_random_engine);
+	_random_yaw_deg100 = _yaw_distribution(_random_engine);
+}
+
+// 新增：获取当前随机生成的吊舱姿态
+void VSerial::get_gimbal_attitude(float &roll_deg, float &pitch_deg, float &yaw_deg) const
+{
+	roll_deg = _random_roll_deg100 / 100.0f;
+	pitch_deg = _random_pitch_deg100 / 100.0f;
+	yaw_deg = _random_yaw_deg100 / 100.0f;
+}
+
 
 // 新增：设置控制量输入
 // 在vserial.cpp中修改set_control_input
@@ -195,10 +224,16 @@ void VSerial::generate_sim_data()
 
 	sim_data.status2 = 0;
 
-	// 模拟角度数据
-	sim_data.azimuth = 1000;    // 10.00度
-	sim_data.elevation = -500;  // -5.00度
-	sim_data.roll = 0;
+	// // 模拟角度数据
+	// sim_data.azimuth = 1000;    // 10.00度
+	// sim_data.elevation = -500;  // -5.00度
+	// sim_data.roll = 0;
+
+	// 使用随机生成的姿态角度数据
+	sim_data.azimuth = _random_yaw_deg100;    // 方位角（0~360度）
+	sim_data.elevation = _random_pitch_deg100;  // 俯仰角（-30~30度）
+	sim_data.roll = _random_roll_deg100;      // 横滚角（-30~30度）
+
 
 	// 模拟目标信息
 	sim_data.target_info = target_locked ? 0x01 : 0x00;
