@@ -792,7 +792,7 @@ void AttackVision::handle_guidance()
 		// 打印固定目标姿态
 		static int target_att_debug_count = 0;
 		if (target_att_debug_count % 5 == 0) {  // 每2秒打印一次
-			PX4_INFO("【固定吊舱目标姿态】 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
+			PX4_INFO("固定吊舱目标姿态,横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
 			static_cast<double>(gimbal_roll_ned) * 180.0 / M_PI,
 			static_cast<double>(gimbal_pitch_ned) * 180.0 / M_PI,
 			static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
@@ -802,38 +802,43 @@ void AttackVision::handle_guidance()
 
 	#else
 		// 硬件模式：使用原来的逻辑（吊舱相对姿态转换）
+		// 提取吊舱相对无人机的欧拉角（FRD body）
 		matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
-		matrix::Quatf q_gimbal_body(gimbal_body);
+		matrix::Quatf q_gimbal_body(gimbal_body); // 四元数表示吊舱相对无人机的姿态
 
 		// 基于吊舱真实的三个姿态解算NED坐标
-		// matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body;
+		matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body; // 四元数表示吊舱在NED坐标系的姿态
 		// 给一个固定的NED目标姿态
-		matrix::Quatf q_gimbal_ned = matrix::Quatf(matrix::Eulerf(0, 0, M_PI_4_F));
-		matrix::Eulerf euler_gimbal_ned(q_gimbal_ned);
+		// matrix::Quatf q_gimbal_ned = matrix::Quatf(matrix::Eulerf(0, 0, M_PI_4_F));
+		matrix::Eulerf euler_gimbal_ned(q_gimbal_ned); // 四元数转欧拉角（NED坐标系）
 
-		float gimbal_roll_ned = euler_gimbal_ned.phi();
-		float gimbal_pitch_ned = euler_gimbal_ned.theta();
-		float gimbal_yaw_ned = euler_gimbal_ned.psi();
+		float gimbal_roll_ned = euler_gimbal_ned.phi(); // 吊舱横滚角（NED）
+		float gimbal_pitch_ned = euler_gimbal_ned.theta(); // 吊舱俯仰角（NED）
+		float gimbal_yaw_ned = euler_gimbal_ned.psi(); // 吊舱偏航角（NED，0=北）
 
 
 		// 打印吊舱姿态（调试用）
-		PX4_INFO("吊舱姿态: 机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
+		PX4_INFO("吊舱机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
 			static_cast<double>(_gimbal_roll) * 180.0 / M_PI,
 			static_cast<double>(_gimbal_pitch) * 180.0 / M_PI,
 			static_cast<double>(_gimbal_yaw) * 180.0 / M_PI);
 	#endif
 
 	// ========== 2. 计算姿态偏差（吊舱姿态 - 无人机姿态） ==========
-	PX4_INFO("吊舱姿态: NED系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
+	PX4_INFO("吊舱NED系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
 		static_cast<double>(gimbal_roll_ned) * 180.0 / M_PI,
 		static_cast<double>(gimbal_pitch_ned) * 180.0 / M_PI,
 		static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
 
 	// ========关键修改 =================关键修改===============
+	// 计算吊舱坐标系的速度向量在NED坐标系下的分量
 	// 首先，获取吊舱的NED四元数 q_gimbal_ned
-	 // 吊舱在自身坐标系中的前向向量（假设X轴为前向）
+	// 假设吊舱的NED四元数已经被正确获取，这里直接使用 q_gimbal_ned
+	// 吊舱在自身坐标系中的前向向量（假设X轴为前向）
 	matrix::Vector3f forward_vec_body(1.0f, 0.0f, 0.0f);
 	// 将前向向量从吊舱坐标系旋转到NED坐标系
+	// 使用四元数 q_gimbal_ned 将向量从云台坐标系旋转到 NED 坐标系。由于 q_gimbal_ned 表示云台相对于 NED
+	// 的姿态（即从云台坐标系到 NED 的旋转），此操作正确给出云台前向在 NED 中的指向。
 	matrix::Vector3f forward_vec_ned = q_gimbal_ned.rotateVector(forward_vec_body);
 	// 归一化前向向量
 	forward_vec_ned.normalize();
@@ -852,10 +857,10 @@ void AttackVision::handle_guidance()
 		static_cast<double>(vx_ned), static_cast<double>(vy_ned), static_cast<double>(vz_ned));
 
 	// ========== 3. 计算姿态偏差（吊舱NED姿态 - 无人机NED姿态） ==========
-	//弧度
-	float roll_error = gimbal_roll_ned - veh_roll;
-	float pitch_error = gimbal_pitch_ned - veh_pitch;
-	float yaw_error = gimbal_yaw_ned - veh_yaw;
+	//弧度 姿态误差 = 吊舱姿态 - 无人机姿态
+	float roll_error = gimbal_roll_ned - veh_roll; // 横滚误差（NED）
+	float pitch_error = gimbal_pitch_ned - veh_pitch; // 俯仰误差（NED）
+	float yaw_error = gimbal_yaw_ned - veh_yaw; 	// 偏航误差（NED）
 
 	// 偏航角误差处理：考虑角度循环
 	yaw_error = matrix::wrap_pi(yaw_error);
