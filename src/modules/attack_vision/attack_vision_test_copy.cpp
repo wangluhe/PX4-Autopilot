@@ -314,60 +314,60 @@ bool AttackVision::try_read_frame()
 
 	return false;
 	#else
-	// 硬件模式：统一使用滑动窗口处理
-	if (_fd < 0) {
-		PX4_ERR("文件描述符无效: %d", _fd);
-		return false;
-	}
-
-	// 一次性读取所有可用数据
-	uint8_t read_buf[256];
-	ssize_t n = ::read(_fd, read_buf, sizeof(read_buf));
-
-	if (n == 0) {
-		// 没有数据可读（非阻塞模式正常）
-		return false;
-	} else if (n < 0) {
-		if (errno == EAGAIN) {
-		// 非阻塞模式下没有数据是正常的
-		return false;
-		} else {
-		PX4_ERR("读取错误: %s", strerror(errno));
-		return false;
-		}
-	}
-
-	// 处理所有读取到的字节
-	for (ssize_t i = 0; i < n; i++) {
-		uint8_t byte = read_buf[i];
-
-		// 如果缓冲区已满，滑动窗口
-		if (_buf_len >= FRAME_LEN) {
-		memmove(_buf, _buf + 1, FRAME_LEN - 1);
-		_buf_len = FRAME_LEN - 1;
+		// 硬件模式：统一使用滑动窗口处理
+		if (_fd < 0) {
+			PX4_ERR("文件描述符无效: %d", _fd);
+			return false;
 		}
 
-		_buf[_buf_len++] = byte;
+		// 一次性读取所有可用数据
+		uint8_t read_buf[256];
+		ssize_t n = ::read(_fd, read_buf, sizeof(read_buf));
 
-		// 检查是否收集到完整帧
-		if (_buf_len >= FRAME_LEN) {
-		// 校验帧格式
-		bool ok = validate_frame(_buf);
-		if (ok) {
-			_last_frame_time_us = hrt_absolute_time();
-			parse_frame_data();
-			_buf_len = 0; // 统一重置缓冲区
-			return true;
-		} else {
-			// 校验失败，滑动窗口继续搜索
+		if (n == 0) {
+			// 没有数据可读（非阻塞模式正常）
+			return false;
+		} else if (n < 0) {
+			if (errno == EAGAIN) {
+			// 非阻塞模式下没有数据是正常的
+			return false;
+			} else {
+			PX4_ERR("读取错误: %s", strerror(errno));
+			return false;
+			}
+		}
+
+		// 处理所有读取到的字节
+		for (ssize_t i = 0; i < n; i++) {
+			uint8_t byte = read_buf[i];
+
+			// 如果缓冲区已满，滑动窗口
+			if (_buf_len >= FRAME_LEN) {
 			memmove(_buf, _buf + 1, FRAME_LEN - 1);
 			_buf_len = FRAME_LEN - 1;
-			PX4_WARN("帧校验失败，滑动窗口");
-		}
-		}
-	}
+			}
 
-	return false;
+			_buf[_buf_len++] = byte;
+
+			// 检查是否收集到完整帧
+			if (_buf_len >= FRAME_LEN) {
+			// 校验帧格式
+			bool ok = validate_frame(_buf);
+			if (ok) {
+				_last_frame_time_us = hrt_absolute_time();
+				parse_frame_data();
+				_buf_len = 0; // 统一重置缓冲区
+				return true;
+			} else {
+				// 校验失败，滑动窗口继续搜索
+				memmove(_buf, _buf + 1, FRAME_LEN - 1);
+				_buf_len = FRAME_LEN - 1;
+				PX4_WARN("帧校验失败，滑动窗口");
+			}
+			}
+		}
+
+		return false;
 	#endif
 }
 
@@ -803,8 +803,21 @@ void AttackVision::handle_guidance()
 	#else
 		// 硬件模式：使用原来的逻辑（吊舱相对姿态转换）
 		// 提取吊舱相对无人机的欧拉角（FRD body）
-		matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
-		matrix::Quatf q_gimbal_body(gimbal_body); // 四元数表示吊舱相对无人机的姿态
+		// 直接用默认的欧拉角构造四元数，这是不对的，应该按照吊舱的旋转顺序进行定义
+		// 先进行俯仰，再进行滚转，再进行偏航
+
+		// matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
+		// matrix::Quatf q_gimbal_body(gimbal_body); // 四元数表示吊舱相对无人机的姿态
+
+		// 吊舱旋转顺序：俯仰(pitch，Y轴) → 滚转(roll，X轴) → 偏航(yaw，Z轴)
+		// 1. 俯仰（绕Y轴）
+		matrix::Quatf q_pitch(matrix::Eulerf(0, _gimbal_pitch, 0));
+		// 2. 滚转（绕X轴）
+		matrix::Quatf q_roll(matrix::Eulerf(_gimbal_roll, 0, 0));
+		// 3. 偏航（绕Z轴）
+		matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
+		// 组合吊舱相对无人机的四元数（先俯仰→再滚转→再偏航：右乘优先）
+		matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
 
 		// 基于吊舱真实的三个姿态解算NED坐标
 		matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body; // 四元数表示吊舱在NED坐标系的姿态
