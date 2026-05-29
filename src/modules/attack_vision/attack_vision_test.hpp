@@ -31,6 +31,8 @@
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/input_rc.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
+#include <uORB/topics/attack_vision_status.h>
+#include <uORB/topics/external_mission_active.h>
 
 /**
  * @class AttackVision
@@ -150,6 +152,24 @@ private:
 	uORB::Publication<vehicle_command_s> _vehicle_cmd_pub{ORB_ID(vehicle_command)};  ///< 发布载具命令（模式切换等）
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};  ///< 订阅载具位置
 	uORB::Publication<vehicle_attitude_setpoint_s> _att_sp_pub{ORB_ID(vehicle_attitude_setpoint)};
+
+	// ========== 机载协同相关 ==========
+	uORB::Subscription _external_mission_active_sub{ORB_ID(external_mission_active)};
+	bool _external_mission_active{false};   // 机载ROS是否正在占用Offboard
+	bool _allow_takeover{false};            // 当前是否允许attack_vision接管
+
+	// 机载/飞控协同状态输出
+	struct attack_vision_status_s {
+		bool lock_active;
+		bool rc_offboard;
+		bool external_mission_active;
+		bool allow_takeover;
+		int16_t pix_offset_x;
+		int16_t pix_offset_y;
+		uint64_t timestamp;
+	};
+	uORB::PublicationMulti<attack_vision_status_s> _attack_vision_status_pub{ORB_ID(attack_vision_status)};
+
 
 	// ========== 模块参数 ==========
 	DEFINE_PARAMETERS(

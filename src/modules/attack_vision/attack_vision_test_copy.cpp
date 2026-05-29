@@ -1239,44 +1239,44 @@ void AttackVision::Run()
 			// ========== 4. 末制导逻辑（在仿真中直接执行，跳过RC检查） ==========
 			// 仿真模式：直接进入Offboard并执行控制
 			if (has_vehicle_status) {
-			if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
-				// 飞控已解锁，尝试进入/保持Offboard
-				if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
-				// 已在Offboard模式，执行制导
-				if (_module_state != ModuleState::OFFBOARD) {
-					PX4_INFO("已进入Offboard模式 - 开始固定偏航45度控制（仿真模式）");
-					_module_state = ModuleState::OFFBOARD;
-				}
-				// 持续发布控制指令（满足Offboard最低频率要求）
-				if (need_control_publish) {
-					handle_guidance();
-					last_control_time = now;
-				}
+				if (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+					// 飞控已解锁，尝试进入/保持Offboard
+					if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+					// 已在Offboard模式，执行制导
+						if (_module_state != ModuleState::OFFBOARD) {
+							PX4_INFO("已进入Offboard模式 - 开始固定偏航45度控制（仿真模式）");
+							_module_state = ModuleState::OFFBOARD;
+						}
+						// 持续发布控制指令（满足Offboard最低频率要求）
+						if (need_control_publish) {
+							handle_guidance();
+							last_control_time = now;
+						}
+					} else {
+					// 不在Offboard模式，尝试切换
+						if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
+							PX4_INFO("仿真模式：尝试切换到Offboard模式");
+							_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+							_switch_start_time = now;
+
+							// 关键：在切换模式前先发布控制信号
+							PX4_INFO("先发布零速度控制信号以满足PX4要求");
+							publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+							last_control_time = now;
+						}
+
+						// 仿真模式下直接切换到Offboard
+						if (switch_to_offboard_sim()) {
+							_module_state = ModuleState::OFFBOARD;
+						}
+					}
 				} else {
-				// 不在Offboard模式，尝试切换
-				if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
-					PX4_INFO("仿真模式：尝试切换到Offboard模式");
-					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-					_switch_start_time = now;
-
-					// 关键：在切换模式前先发布控制信号
-					PX4_INFO("先发布零速度控制信号以满足PX4要求");
-					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-					last_control_time = now;
+					PX4_WARN("飞控未解锁，无法进入Offboard模式");
+					if (_module_state != ModuleState::HOLD) {
+					_module_state = ModuleState::HOLD;
+					}
+					_switch_start_time = 0;
 				}
-
-				// 仿真模式下直接切换到Offboard
-				if (switch_to_offboard_sim()) {
-					_module_state = ModuleState::OFFBOARD;
-				}
-				}
-			} else {
-				PX4_WARN("飞控未解锁，无法进入Offboard模式");
-				if (_module_state != ModuleState::HOLD) {
-				_module_state = ModuleState::HOLD;
-				}
-				_switch_start_time = 0;
-			}
 			}
 		#else
 			const uint64_t frame_timeout_us = 200000;  // 200ms超时
@@ -1366,15 +1366,15 @@ void AttackVision::Run()
 		// ========== 5. 状态打印（保持原有逻辑） ==========
 		if (now - last_status_time > 5000000) {
 			uint64_t time_since_last = now - _last_frame_time_us;
-		if (has_vehicle_status) {
-			PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d, RC模式=%d",
-				vehicle_status.nav_state, vehicle_status.arming_state, (int)_current_rc_mode);
-		}
+			if (has_vehicle_status) {
+				PX4_INFO("飞控状态: 导航状态=%d, 解锁状态=%d, RC模式=%d",
+					vehicle_status.nav_state, vehicle_status.arming_state, (int)_current_rc_mode);
+			}
 
-		if (time_since_last > 1000000) {
-			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
-		}
-		last_status_time = now;
+			if (time_since_last > 1000000) {
+				PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
+			}
+			last_status_time = now;
 		}
 
 		if (now - last_drone_status_time > 1000000) {
