@@ -615,9 +615,8 @@ void AttackVision::switch_to_rc_mode(RCMode target_mode)
 		case RCMode::MODE_UNKNOWN:
 		// 未知档位，切换到悬停模式
 		cmd.param1 = 1;  // 主模式：AUTO
-		// cmd.param2 = 4;  // 子模式：AUTO_LOITER
-		cmd.param2 = PX4_CUSTOM_MAIN_MODE_AUTO;  // 子模式：AUTO_LOITER
-		cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LAND;  //
+		cmd.param2 = PX4_CUSTOM_MAIN_MODE_AUTO;  // 主模式 AUTO
+		cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LOITER;  // 子模式：AUTO_LOITER
 		PX4_INFO("Switch to LOITER mode (unknown RC mode)");
 		break;
 
@@ -752,22 +751,20 @@ void AttackVision::handle_guidance()
 	if (!_allow_takeover) {
 		return;
 	}
-	PX4_INFO("=== handle_guidance() entered ===");
-	// 获取控制参数（姿态增益、最大速度）
-	const float att_kp = _param_av_att_kp.get();    // 姿态控制增益（默认0.1）
-	const float max_forward_v = _param_av_forward_v.get();  // 前向接近速度（默认1.0m/s）
-	const float max_att_error = 0.5f;  // 最大姿态偏差限制（弧度，~28.6°）
 
-	// 参数有效性检查
+	const float att_kp = _param_av_att_kp.get();
+	const float max_forward_v = _param_av_forward_v.get();
+	const float max_att_error = 0.5f;
+	const float max_vz = 0.8f;
+
 	if (!PX4_ISFINITE(att_kp) || !PX4_ISFINITE(max_forward_v)) {
-		PX4_ERR("姿态控制参数无效，停止制导");
+		PX4_ERR("guidance params invalid");
 		return;
 	}
 
-	// ========== 1. 获取无人机当前姿态 ==========
 	vehicle_attitude_s veh_att{};
 	if (!_vehicle_attitude_sub.copy(&veh_att)) {
-		PX4_WARN("无法获取无人机姿态，跳过控制");
+		PX4_WARN("no vehicle attitude");
 		return;
 	}
 
@@ -776,35 +773,20 @@ void AttackVision::handle_guidance()
 	// 无人机姿态四元数（NED坐标系）
 	matrix::Quatf q_veh_ned(veh_att.q);
 	matrix::Eulerf euler_veh_ned(q_veh_ned);
+	const float veh_roll = euler_veh_ned.phi();
+	const float veh_pitch = euler_veh_ned.theta();
+	const float veh_yaw = euler_veh_ned.psi();
 
-	float veh_roll = euler_veh_ned.phi();    // 无人机横滚角（NED）
-	float veh_pitch = euler_veh_ned.theta(); // 无人机俯仰角（NED）
-	float veh_yaw = euler_veh_ned.psi();     // 无人机偏航角（NED，0=北）
+	float gimbal_roll_ned = 0.f;
+	float gimbal_pitch_ned = 0.f;
+	float gimbal_yaw_ned = 0.f;
+	matrix::Quatf q_gimbal_ned;
 
-	// 打印无人机当前姿态（调试用）
-	PX4_INFO("无人机当前姿态: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
-		static_cast<double>(veh_roll) * 180.0 / M_PI,
-		static_cast<double>(veh_pitch) * 180.0 / M_PI,
-		static_cast<double>(veh_yaw) * 180.0 / M_PI);
-
-	// ========== 2. 使用固定的虚拟吊舱姿态 ==========
 	#ifdef __PX4_POSIX
-		// 仿真模式：使用固定的NED目标姿态
-		float gimbal_roll_ned = _fixed_gimbal_roll_ned;
-		float gimbal_pitch_ned = _fixed_gimbal_pitch_ned;
-		float gimbal_yaw_ned = _fixed_gimbal_yaw_ned;
-
-		// 打印固定目标姿态
-		static int target_att_debug_count = 0;
-		if (target_att_debug_count % 5 == 0) {  // 每2秒打印一次
-			PX4_INFO("固定吊舱目标姿态,横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
-			static_cast<double>(gimbal_roll_ned) * 180.0 / M_PI,
-			static_cast<double>(gimbal_pitch_ned) * 180.0 / M_PI,
-			static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
-		}
-		target_att_debug_count++;
-		matrix::Quatf q_gimbal_ned = matrix::Quatf(matrix::Eulerf(gimbal_roll_ned, gimbal_pitch_ned, gimbal_yaw_ned));
-
+		gimbal_roll_ned = _fixed_gimbal_roll_ned;
+		gimbal_pitch_ned = _fixed_gimbal_pitch_ned;
+		gimbal_yaw_ned = _fixed_gimbal_yaw_ned;
+		q_gimbal_ned = matrix::Quatf(matrix::Eulerf(gimbal_roll_ned, gimbal_pitch_ned, gimbal_yaw_ned));
 	#else
 		// 硬件模式：使用原来的逻辑（吊舱相对姿态转换）
 		// 提取吊舱相对无人机的欧拉角（FRD body）
@@ -823,128 +805,33 @@ void AttackVision::handle_guidance()
 		matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
 		// 组合吊舱相对无人机的四元数（先俯仰→再滚转→再偏航：右乘优先）
 		matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
-
-		// 基于吊舱真实的三个姿态解算NED坐标
-		matrix::Quatf q_gimbal_ned = q_veh_ned * q_gimbal_body; // 四元数表示吊舱在NED坐标系的姿态
-		// 给一个固定的NED目标姿态
-		// matrix::Quatf q_gimbal_ned = matrix::Quatf(matrix::Eulerf(0, 0, M_PI_4_F));
-		matrix::Eulerf euler_gimbal_ned(q_gimbal_ned); // 四元数转欧拉角（NED坐标系）
-
-		float gimbal_roll_ned = euler_gimbal_ned.phi(); // 吊舱横滚角（NED）
-		float gimbal_pitch_ned = euler_gimbal_ned.theta(); // 吊舱俯仰角（NED）
-		float gimbal_yaw_ned = euler_gimbal_ned.psi(); // 吊舱偏航角（NED，0=北）
-
-
-		// 打印吊舱姿态（调试用）
-		PX4_INFO("吊舱机体系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
-			static_cast<double>(_gimbal_roll) * 180.0 / M_PI,
-			static_cast<double>(_gimbal_pitch) * 180.0 / M_PI,
-			static_cast<double>(_gimbal_yaw) * 180.0 / M_PI);
+		q_gimbal_ned = q_veh_ned * q_gimbal_body;
+		matrix::Eulerf euler_gimbal_ned(q_gimbal_ned);
+		gimbal_roll_ned = euler_gimbal_ned.phi();
+		gimbal_pitch_ned = euler_gimbal_ned.theta();
+		gimbal_yaw_ned = euler_gimbal_ned.psi();
 	#endif
 
-	// ========== 2. 计算姿态偏差（吊舱姿态 - 无人机姿态） ==========
-	PX4_INFO("吊舱NED系(滚=%.2f°,俯=%.2f°,偏=%.2f°)",
-		static_cast<double>(gimbal_roll_ned) * 180.0 / M_PI,
-		static_cast<double>(gimbal_pitch_ned) * 180.0 / M_PI,
-		static_cast<double>(gimbal_yaw_ned) * 180.0 / M_PI);
+	matrix::Vector3f forward_vec_ned = q_gimbal_ned.rotateVector(matrix::Vector3f(1.f, 0.f, 0.f));
+	if (forward_vec_ned.norm() > 1e-3f) {
+		forward_vec_ned.normalize();
+	}
 
-	// ========关键修改 =================关键修改===============
-	// 计算吊舱坐标系的速度向量在NED坐标系下的分量
-	// 首先，获取吊舱的NED四元数 q_gimbal_ned
-	// 假设吊舱的NED四元数已经被正确获取，这里直接使用 q_gimbal_ned
-	// 吊舱在自身坐标系中的前向向量（假设X轴为前向）
-	matrix::Vector3f forward_vec_body(1.0f, 0.0f, 0.0f);
-	// 将前向向量从吊舱坐标系旋转到NED坐标系
-	// 使用四元数 q_gimbal_ned 将向量从云台坐标系旋转到 NED 坐标系。由于 q_gimbal_ned 表示云台相对于 NED
-	// 的姿态（即从云台坐标系到 NED 的旋转），此操作正确给出云台前向在 NED 中的指向。
-	matrix::Vector3f forward_vec_ned = q_gimbal_ned.rotateVector(forward_vec_body);
-	// 归一化前向向量
-	forward_vec_ned.normalize();
-	// 速度向量 = 归一化的前向向量 × 速度大小
-	matrix::Vector3f velocity_ned = forward_vec_ned * max_forward_v;
-	// 获取速度分量
-	float vx_ned = velocity_ned(0);  // 北向分量
-	float vy_ned = velocity_ned(1);  // 东向分量
-	float vz_ned = velocity_ned(2);  // 垂向分量（向下为正）
+	float vx_ned = forward_vec_ned(0) * max_forward_v;
+	float vy_ned = forward_vec_ned(1) * max_forward_v;
+	float vz_ned = math::constrain(forward_vec_ned(2) * max_forward_v, -max_vz, max_vz);
 
-	PX4_INFO("吊舱指向向量: 北=%.2f, 东=%.2f, 垂=%.2f",
-		static_cast<double>(forward_vec_ned(0)),
-		static_cast<double>(forward_vec_ned(1)),
-		static_cast<double>(forward_vec_ned(2)));
-	PX4_INFO("速度向量: 北=%.2fm/s, 东=%.2fm/s, 垂=%.2fm/s",
-		static_cast<double>(vx_ned), static_cast<double>(vy_ned), static_cast<double>(vz_ned));
-
-	// ========== 3. 计算姿态偏差（吊舱NED姿态 - 无人机NED姿态） ==========
-	//弧度 姿态误差 = 吊舱姿态 - 无人机姿态
-	float roll_error = gimbal_roll_ned - veh_roll; // 横滚误差（NED）
-	float pitch_error = gimbal_pitch_ned - veh_pitch; // 俯仰误差（NED）
-	float yaw_error = gimbal_yaw_ned - veh_yaw; 	// 偏航误差（NED）
-
-	// 偏航角误差处理：考虑角度循环
-	yaw_error = matrix::wrap_pi(yaw_error);
-
-	PX4_INFO("误差限幅前: 滚=%.2f°,俯=%.2f°,偏=%.2f°",
-		static_cast<double>(roll_error * 180.0f / M_PI_F),
-		static_cast<double>(pitch_error * 180.0f / M_PI_F),
-		static_cast<double>(yaw_error * 180.0f / M_PI_F));
-
-	// 姿态偏差限幅（防止控制饱和）
-	roll_error = math::constrain(roll_error, -max_att_error, max_att_error);
-	pitch_error = math::constrain(pitch_error, -max_att_error, max_att_error);
+	float roll_error = math::constrain(gimbal_roll_ned - veh_roll, -max_att_error, max_att_error);
+	float pitch_error = math::constrain(gimbal_pitch_ned - veh_pitch, -max_att_error, max_att_error);
+	float yaw_error = matrix::wrap_pi(gimbal_yaw_ned - veh_yaw);
 	yaw_error = math::constrain(yaw_error, -max_att_error, max_att_error);
 
-	PX4_INFO("误差限幅后: 滚=%.2f°,俯=%.2f°,偏=%.2f° (限制±%.1f°)",
-		static_cast<double>(roll_error * 180.0f / M_PI_F),
-		static_cast<double>(pitch_error * 180.0f / M_PI_F),
-		static_cast<double>(yaw_error * 180.0f / M_PI_F),
-		static_cast<double>(max_att_error * 180.0f / M_PI_F));
-
-	// ========== 4. 姿态控制律（比例控制） ==========
-	float target_roll = veh_roll+ att_kp * roll_error;
-	float target_pitch = veh_pitch + att_kp * pitch_error;
-	float target_yaw = veh_yaw + att_kp * yaw_error*3;
-	float target_yaw_rate = 0.0f;  // 偏航角速度保持0（跟随姿态即可）
-
-	PX4_INFO("姿态控制限幅前: 滚=%.2f°, 俯=%.2f°, 偏=%.2f°",
-		static_cast<double>(target_roll * 180.0f / M_PI_F),
-		static_cast<double>(target_pitch * 180.0f / M_PI_F),
-		static_cast<double>(target_yaw * 180.0f / M_PI_F));
-
-	// 目标姿态限幅（符合无人机物理极限）
-	float target_roll_before = target_roll;
-	float target_pitch_before = target_pitch;
-	float target_yaw_before = target_yaw;
-
-	target_roll = math::constrain(target_roll, -M_PI_4_F, M_PI_4_F);    // 横滚±45°
-	target_pitch = math::constrain(target_pitch, -M_PI_2_F/3.0f, M_PI_2_F/3.0f);  // 俯仰±30°
-	target_yaw = matrix::wrap_pi(target_yaw);  // 偏航角归一化到[-π, π]
-
-	// 调试输出：限幅后的目标姿态
-	PX4_INFO("姿态控制限幅后: 滚=%.2f°, 俯=%.2f°, 偏=%.2f°",
-		static_cast<double>(target_roll * 180.0f / M_PI_F),
-		static_cast<double>(target_pitch * 180.0f / M_PI_F),
-		static_cast<double>(target_yaw * 180.0f / M_PI_F));
-
-	// 检查是否发生限幅
-	if (fabsf(target_roll_before - target_roll) > 0.01f) {
-		PX4_WARN("横滚角被限幅! 原始值%.2f°超出±45°限制", static_cast<double>(target_roll_before * 180.0f / M_PI_F));
-	}
-	if (fabsf(target_pitch_before - target_pitch) > 0.01f) {
-		PX4_WARN("俯仰角被限幅! 原始值%.2f°超出±30°限制", static_cast<double>(target_pitch_before * 180.0f / M_PI_F));
-	}
-	if (fabsf(target_yaw_before - target_yaw) > 0.01f) {
-		PX4_WARN("偏航角被包装! 原始值%.2f°超出[-180°,180°]范围", static_cast<double>(target_yaw_before * 180.0f / M_PI_F));
-	}
+	float target_roll = math::constrain(veh_roll + att_kp * roll_error, -M_PI_4_F, M_PI_4_F);
+	float target_pitch = math::constrain(veh_pitch + att_kp * pitch_error, -M_PI_2_F / 3.0f, M_PI_2_F / 3.0f);
+	float target_yaw = matrix::wrap_pi(veh_yaw + att_kp * yaw_error);
+	float target_yaw_rate = 0.0f;
 
 	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, vz_ned, target_yaw_rate);
-
-	// 调试输出
-	PX4_INFO("姿态跟踪: 目标(滚=%.2f°, 俯=%.2f°, 偏=%.2f°) | 速度(前向=%.2fm/s)",
-		static_cast<double>(target_roll * 180.0f / M_PI_F),
-		static_cast<double>(target_pitch * 180.0f / M_PI_F),
-		static_cast<double>(target_yaw * 180.0f / M_PI_F),
-		static_cast<double>(max_forward_v));
-
 }
 
 // ========== 新增：姿态+速度控制发布函数 ==========
@@ -964,17 +851,8 @@ void AttackVision::publish_attitude_velocity_control(
 	float target_yaw_rate)
 {
 	// ========== 1. 打印输入参数（原始值+角度转换） ==========
-	PX4_INFO("===== 姿态+速度控制指令发布 =====");
-	PX4_INFO("输入参数");
-	PX4_INFO("目标姿态（角度）: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
-		(double)(target_roll * 180.0f / M_PI_F),
-		(double)(target_pitch * 180.0f / M_PI_F),
-		(double)(target_yaw * 180.0f / M_PI_F));
-	PX4_INFO("NED速度 : 北向=%.4fm/s, 东向=%.4fm/s, 垂向=0.0000m/s",
-		(double)vx_ned, (double)vy_ned);
-	PX4_INFO("偏航角速度: %.4frad/s (%.2f°/s)",
-		(double)target_yaw_rate, (double)(target_yaw_rate * 180.0f / M_PI_F));
-	// 发布Offboard控制模式（启用姿态+速度混合控制）
+	PX4_DEBUG("guidance target r=%.2f p=%.2f y=%.2f vx=%.2f vy=%.2f vz=%.2f", (double)target_roll, (double)target_pitch, (double)target_yaw, (double)vx_ned, (double)vy_ned, (double)vz_ned);
+
 	offboard_control_mode_s ocm{};
 	ocm.timestamp = hrt_absolute_time();
 	ocm.position = false;
@@ -983,13 +861,6 @@ void AttackVision::publish_attitude_velocity_control(
 	ocm.body_rate = false;
 	_offboard_ctrl_pub.publish(ocm);
 
-	PX4_INFO("Offboard控制模式");
-	PX4_INFO("时间戳: %lluus, 位置控制=%d, 速度控制=%d,",
-		(unsigned long long)ocm.timestamp,
-		ocm.position, ocm.velocity);
-	PX4_INFO("姿态控制=%d, 机体系速率控制=%d",
-		ocm.attitude, ocm.body_rate);
-	// 发布轨迹设定点（姿态+速度）
 	trajectory_setpoint_s sp{};
 	sp.timestamp = ocm.timestamp;
 	// 位置：不控制（设为NaN）
@@ -999,8 +870,7 @@ void AttackVision::publish_attitude_velocity_control(
 	// 速度：前向靠近（NED坐标系）
 	sp.velocity[0] = vx_ned;
 	sp.velocity[1] = vy_ned;
-	sp.velocity[2] = vz_ned;  // 垂直速度
-	// 加速度：不控制
+	sp.velocity[2] = vz_ned;
 	sp.acceleration[0] = NAN;
 	sp.acceleration[1] = NAN;
 	sp.acceleration[2] = NAN;
@@ -1010,35 +880,13 @@ void AttackVision::publish_attitude_velocity_control(
 
 	vehicle_attitude_setpoint_s att_sp{};
 	att_sp.timestamp = ocm.timestamp;
-
-	matrix::Quatf q_target = matrix::Quatf(matrix::Eulerf(0, 0, target_yaw));
+	matrix::Quatf q_target(matrix::Eulerf(target_roll, target_pitch, target_yaw));
 	att_sp.q_d[0] = q_target(0);
 	att_sp.q_d[1] = q_target(1);
 	att_sp.q_d[2] = q_target(2);
 	att_sp.q_d[3] = q_target(3);
-
 	att_sp.yaw_sp_move_rate = target_yaw_rate;
 	_att_sp_pub.publish(att_sp);
-
-	matrix::Eulerf euler_back(q_target);
-	PX4_INFO("【姿态设定点（vehicle_attitude_setpoint）】");
-	PX4_INFO("  时间戳: %lluus", (unsigned long long)att_sp.timestamp);
-	PX4_INFO("  四元数: w=%.6f, x=%.6f, y=%.6f, z=%.6f",
-		(double)att_sp.q_d[0], (double)att_sp.q_d[1], (double)att_sp.q_d[2], (double)att_sp.q_d[3]);
-	PX4_INFO("  四元数回算欧拉角: 横滚=%.2f°, 俯仰=%.2f°, 偏航=%.2f°",
-		(double)(euler_back.phi() * 180.0f / M_PI_F),
-		(double)(euler_back.theta() * 180.0f / M_PI_F),
-		(double)(euler_back.psi() * 180.0f / M_PI_F));
-	PX4_INFO("  偏航角速度设定: %.4frad/s (%.2f°/s)",
-		(double)att_sp.yaw_sp_move_rate, (double)(att_sp.yaw_sp_move_rate * 180.0f / M_PI_F));
-
-	// ========== 5. 关键校验：速度矢量方向 ==========
-	float speed_mag = sqrtf(vx_ned*vx_ned + vy_ned*vy_ned);
-	float speed_yaw = atan2f(vy_ned, vx_ned);  // 速度方向的偏航角（NED）
-	PX4_INFO("【速度矢量校验】");
-	PX4_INFO("  速度大小: %.2fm/s, 速度方向偏航角: %.2f° (正北=0°, 正东=90°)",
-		(double)speed_mag, (double)(speed_yaw * 180.0f / M_PI_F));
-	PX4_INFO("==========================================");
 
 }
 
@@ -1174,26 +1022,14 @@ void AttackVision::Run()
 
 	#ifdef __PX4_POSIX
 		if (!_virtual_gimbal_initialized) {
-			// 1. 生成随机角度（-45°到45°之间）
-			// 使用更合理的范围，避免过度倾斜
-			float random_roll = static_cast<float>(rand() % 91 - 80);   // -45° 到 45°
-			float random_pitch = static_cast<float>(rand() % 91 - 80);  // -45° 到 45°
-			float random_yaw = static_cast<float>(rand() % 361 - 300);  // -180° 到 180°
+			_fixed_gimbal_roll_ned = 0.0f;
+			_fixed_gimbal_pitch_ned = 0.0f;
+			_fixed_gimbal_yaw_ned = M_PI_4_F + M_PI_2_F / 3.0f;
 
-			// 2. 直接固定为NED坐标系目标姿态（不再是相对姿态）
-			_fixed_gimbal_roll_ned = random_roll * M_PI_F / 180.0f;
-			_fixed_gimbal_pitch_ned = random_pitch * M_PI_F / 180.0f;
-			_fixed_gimbal_yaw_ned = random_yaw * M_PI_F / 180.0f;
-
-			_fixed_gimbal_roll_ned = 0;
-			_fixed_gimbal_pitch_ned = 0;
-			_fixed_gimbal_yaw_ned = M_PI_4_F+M_PI_2_F/3.0f;
-
-			// 3. 打印固定目标姿态
 			PX4_INFO("【仿真模式】固定吊舱NED目标姿态初始化:");
-			PX4_INFO("  - 目标横滚: %.2f° (%.6f rad)", (double)random_roll, (double)_fixed_gimbal_roll_ned);
-			PX4_INFO("  - 目标俯仰: %.2f° (%.6f rad)", (double)random_pitch, (double)_fixed_gimbal_pitch_ned);
-			PX4_INFO("  - 目标偏航: %.2f° (%.6f rad)", (double)random_yaw, (double)_fixed_gimbal_yaw_ned);
+			PX4_INFO("  - 目标横滚: %.2f° (%.6f rad)", 0.0, (double)_fixed_gimbal_roll_ned);
+			PX4_INFO("  - 目标俯仰: %.2f° (%.6f rad)", 0.0, (double)_fixed_gimbal_pitch_ned);
+			PX4_INFO("  - 目标偏航: %.2f° (%.6f rad)", (double)(_fixed_gimbal_yaw_ned * 180.0f / M_PI_F), (double)_fixed_gimbal_yaw_ned);
 			PX4_INFO("注意：无人机将尝试跟踪这个固定的NED姿态目标");
 
 			// 4. 为了兼容现有代码，仍需设置机体相对姿态（设为0，表示吊舱与机体对齐）
@@ -1288,12 +1124,10 @@ void AttackVision::Run()
 		status.timestamp = now;
 		_attack_vision_status_pub.publish(status);
 
-		// 6) 让路逻辑：机载占用且未锁定时，PX4 不抢控制权
-		if (_external_mission_active && !_lock_active) {
-			PX4_INFO("External mission active and not locked");
+		// 6) 上位机占用时，attack_vision 只让路，不主动切模式
+		if (_external_mission_active) {
 			if (_module_state != ModuleState::HOLD) {
-				PX4_INFO("External mission active and not locked -> HOLD");
-				switch_to_hold();
+				PX4_INFO("External mission active -> attack_vision idle");
 				_module_state = ModuleState::HOLD;
 			}
 			usleep(20000);
@@ -1355,16 +1189,16 @@ void AttackVision::Run()
 						);
 					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 					_switch_start_time = now;
-
-					// 关键：在切换模式前先发布控制信号
-					PX4_INFO("先发布零速度控制信号以满足PX4要求");
-					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-					last_control_time = now;
 				}
 
+				// 切换前持续预热 setpoint，避免 Offboard 进入失败
+				publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+				last_control_time = now;
+
 				#ifdef __PX4_POSIX
-					switch_to_offboard_sim();
-					_module_state = ModuleState::OFFBOARD;
+					if (switch_to_offboard_sim()) {
+						_module_state = ModuleState::OFFBOARD;
+					}
 				#else
 					switch_to_offboard();
 				#endif
