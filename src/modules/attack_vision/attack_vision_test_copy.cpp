@@ -1049,71 +1049,46 @@ void AttackVision::Run()
 	static uint64_t last_drone_status_time = 0;
 
 	while (!should_exit()) {
-		// ========== 1. 优先解析RC模式（遥控器优先级最高） ==========
-		// ========== 1. 仿真模式：跳过RC检测，直接设置为Offboard模式 ==========
 		const uint64_t now = hrt_absolute_time();
-		// 1) 读取RC模式
+
+		// 1) 更新 RC 模式。仿真保留原差异：不依赖实体遥控器，直接视为 Offboard 授权档。
 		#ifdef __PX4_POSIX
-			// 在仿真中，直接视为 Offboard 档位，允许后续读取虚拟吊舱帧并进入制导
 			_current_rc_mode = RCMode::MODE_OFFBOARD;
-			// 仿真中不强制进入 Offboard，等待 commander mode offboard 真的生效后再接管
-			// 这里只保留默认状态，由后续 vehicle_status/nav_state 判断是否允许制导
 		#else
-			RCMode new_rc_mode = parse_rc_mode();
+			const RCMode new_rc_mode = parse_rc_mode();
 			if (new_rc_mode != _current_rc_mode) {
 				PX4_INFO("RC mode changed: %d -> %d", (int)_current_rc_mode, (int)new_rc_mode);
 				_current_rc_mode = new_rc_mode;
-
-				// RC切换出Offboard档位：立即退出Offboard，切换到对应RC模式
-				if (_current_rc_mode != RCMode::MODE_OFFBOARD && _module_state != ModuleState::HOLD) {
-					PX4_INFO("RC switch out of Offboard, stop guidance");
-					switch_to_rc_mode(_current_rc_mode);
-					_module_state = ModuleState::HOLD;
-					_switch_start_time = 0;
-				}
 			}
 		#endif
 
 		const bool rc_offboard = (_current_rc_mode == RCMode::MODE_OFFBOARD);
-		PX4_INFO("rc_offboard: %d", rc_offboard);
 
-		// 2) 读取机载协同状态 external_mission_active
+		// 2) 更新上位机协同状态。
 		if (_external_mission_active_sub.updated()) {
 			bool external_active = false;
 			_external_mission_active_sub.copy(&external_active);
 			_external_mission_active = external_active;
 		}
-		PX4_INFO("external_mission_active: %d", _external_mission_active);
 
-		// 3) 读取吊舱帧
-
+		// 3) 更新吊舱帧。
 		static uint64_t last_frame_log_time = 0;
-		if (try_read_frame()) {
-			if (now - last_frame_log_time > 3000000) {
-				PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
-					(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-				last_frame_log_time = now;
-			}
+		if (try_read_frame() && now - last_frame_log_time > 3000000) {
+			PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
+				(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+			last_frame_log_time = now;
 		}
-		PX4_INFO("lock_active: %d", _lock_active);
 
-		// vehicle_status_s vehicle_status{};
-		// const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
-		// const bool frame_valid_recent = ((now - _last_frame_time_us) < frame_timeout_us);
-		// const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
-		// const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+		// 4) 更新飞控状态和统一接管判定。
+		vehicle_status_s vehicle_status{};
+		const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
+		const bool frame_valid_recent = (_last_frame_time_us > 0) && ((now - _last_frame_time_us) < frame_timeout_us);
+		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
+		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
 
-
-		// 如果与上位机一起测试：遥控器在offboard模式，机载计算机让权，吊舱锁定
 		_allow_takeover = rc_offboard && !_external_mission_active && _lock_active;
-		// 4) 判断是否允许 PX4 attack_vision 接管
-		// 仿真最小化验证模式：只要 commander 已切到 offboard，就允许进入末制导
-		// #ifdef __PX4_POSIX
-		// 	_allow_takeover = vehicle_in_offboard;
-		// #else
-		// 	_allow_takeover = rc_offboard && !_external_mission_active && _lock_active;
-		// #endif
-		PX4_INFO("allow_takeover: %d", _allow_takeover);
+		const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
+
 		attack_vision_status_s status{};
 		status.lock_active = _lock_active;
 		status.rc_offboard = rc_offboard;
@@ -1124,47 +1099,39 @@ void AttackVision::Run()
 		status.timestamp = now;
 		_attack_vision_status_pub.publish(status);
 
-		// 6) 上位机占用时，attack_vision 只让路，不主动切模式
+		// 5) 最高优先级：上位机 active 时完全让路，不主动切 HOLD。
 		if (_external_mission_active) {
 			if (_module_state != ModuleState::HOLD) {
 				PX4_INFO("External mission active -> attack_vision idle");
 				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
 			}
 			usleep(20000);
 			continue;
 		}
 
-		// 7) RC 不在 Offboard，直接保持
+		// 6) 遥控器退出末制导授权：实机切回 RC 对应模式，未知档位悬停；仿真不会进入该分支。
 		if (!rc_offboard) {
-			PX4_INFO("RC not in Offboard");
 			if (_module_state != ModuleState::HOLD) {
-				PX4_INFO("RC not in Offboard -> HOLD");
-				switch_to_hold();
+				PX4_INFO("RC not in Offboard -> stop guidance");
+				if (_current_rc_mode == RCMode::MODE_UNKNOWN) {
+					switch_to_hold();
+				} else {
+					switch_to_rc_mode(_current_rc_mode);
+				}
 				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
 			}
 			usleep(20000);
 			continue;
 		}
 
-		vehicle_status_s vehicle_status{};
-		const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
-		const bool frame_valid_recent = ((now - _last_frame_time_us) < frame_timeout_us);
-		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
-		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
-		// 与上位机联合测试代码用：允许px4接管，控制周期满足要求，无人机解锁
-		const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
-
-		// 如果单独测px4,用下面的
-		// #ifdef __PX4_POSIX
-		// 	const bool can_control = _allow_takeover;
-		// #else
-		// 	const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
-		// #endif
-		PX4_INFO("can_control: %d", can_control);
-		if (can_control) {
-			if (vehicle_in_offboard) {
-				if (_module_state != ModuleState::OFFBOARD) {
-					PX4_INFO("已进入Offboard模式 - 开始末制导%s",
+		// 7) 显式状态机：HOLD 等待接管，SWITCHING 预热并切 Offboard，OFFBOARD 执行末制导。
+		switch (_module_state) {
+		case ModuleState::HOLD:
+			if (can_control) {
+				if (vehicle_in_offboard) {
+					PX4_INFO("已在Offboard模式 - 开始末制导%s",
 					#ifdef __PX4_POSIX
 						"(仿真模式)"
 					#else
@@ -1172,56 +1139,80 @@ void AttackVision::Run()
 					#endif
 						);
 					_module_state = ModuleState::OFFBOARD;
-				}
-
-				if ((now - last_control_time) > control_timeout_us) {
-					handle_guidance();
-					last_control_time = now;
-				}
-			} else {
-				if (_module_state != ModuleState::SWITCHING_TO_OFFBOARD) {
-					PX4_INFO("%s模式：尝试切换到Offboard模式",
-						#ifdef __PX4_POSIX
-							"仿真"
-						#else
-							"RC授权Offboard"
-						#endif
-						);
+				} else {
+					PX4_INFO("末制导条件满足，开始切换到Offboard模式");
 					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 					_switch_start_time = now;
 				}
-
-				// 切换前持续预热 setpoint，避免 Offboard 进入失败
-				publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-				last_control_time = now;
-
-				#ifdef __PX4_POSIX
-					if (switch_to_offboard_sim()) {
-						_module_state = ModuleState::OFFBOARD;
-					}
-				#else
-					switch_to_offboard();
-				#endif
-
 			}
-		} else {
-			if (_module_state != ModuleState::HOLD) {
-				PX4_INFO("Takeover not allowed / frame invalid / vehicle not armed -> HOLD");
-				switch_to_hold();
+			break;
+
+		case ModuleState::SWITCHING_TO_OFFBOARD:
+			if (!can_control) {
+				PX4_INFO("Offboard切换条件丢失 -> 悬停");
+				if (vehicle_armed) {
+					switch_to_hold();
+				}
 				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
+				break;
 			}
-			_switch_start_time = 0;
+
+			if (vehicle_in_offboard) {
+				PX4_INFO("Offboard切换完成 - 开始末制导");
+				_module_state = ModuleState::OFFBOARD;
+				break;
+			}
+
+			publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+			last_control_time = now;
+
+			#ifdef __PX4_POSIX
+				if (switch_to_offboard_sim()) {
+					_module_state = ModuleState::OFFBOARD;
+				}
+			#else
+				switch_to_offboard();
+			#endif
+			break;
+
+		case ModuleState::OFFBOARD:
+			if (!can_control) {
+				PX4_INFO("末制导条件丢失 -> 悬停");
+				if (vehicle_armed) {
+					switch_to_hold();
+				}
+				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
+				break;
+			}
+
+			if (!vehicle_in_offboard) {
+				PX4_WARN("飞控已退出Offboard，重新进入切换状态");
+				_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+				_switch_start_time = now;
+				break;
+			}
+
+			if ((now - last_control_time) > control_timeout_us) {
+				handle_guidance();
+				last_control_time = now;
+			}
+			break;
 		}
 
 		if (now - last_status_time > 5000000) {
-			const uint64_t time_since_last = now - _last_frame_time_us;
+			const uint64_t time_since_last = (_last_frame_time_us > 0) ? (now - _last_frame_time_us) : UINT64_MAX;
 			if (has_vehicle_status) {
-				PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, external_active=%d, allow_takeover=%d, module_state=%d",
+				PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, external_active=%d, lock=%d, frame_valid=%d, allow_takeover=%d, can_control=%d, module_state=%d",
 					vehicle_status.nav_state,
 					vehicle_status.arming_state,
 					(int)_current_rc_mode,
 					(int)_external_mission_active,
+					(int)_lock_active,
+					(int)frame_valid_recent,
 					(int)_allow_takeover,
+					(int)can_control,
 					(int)_module_state);
 			}
 
@@ -1242,8 +1233,6 @@ void AttackVision::Run()
 			last_drone_status_time = now;
 		}
 
-
-		// 控制循环频率（50Hz）
 		usleep(20000);
 	}
 
