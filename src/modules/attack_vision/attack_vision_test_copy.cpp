@@ -748,8 +748,94 @@ void quaternion_to_euler(const float q[4], float &roll, float &pitch, float &yaw
 
 void AttackVision::handle_guidance()
 {
-	if (!_allow_takeover) {
+	if (!check_guidance_ready()) {
 		return;
+	}
+
+	VehicleGuidanceState veh{};
+	if (!read_vehicle_guidance_state(veh)) {
+		return;
+	}
+
+	GimbalNedPose gimbal{};
+	if (!get_gimbal_ned_pose(veh.q_veh_ned, gimbal)) {
+		return;
+	}
+
+	GuidanceCommand cmd{};
+	if (!build_guidance_command(veh, gimbal, cmd)) {
+		return;
+	}
+
+	publish_guidance_command(cmd);
+}
+
+bool AttackVision::check_guidance_ready()
+{
+	if (!_allow_takeover) {
+		return false;
+	}
+
+	const float att_kp = _param_av_att_kp.get();
+	const float max_forward_v = _param_av_forward_v.get();
+
+	if (!PX4_ISFINITE(att_kp) || !PX4_ISFINITE(max_forward_v)) {
+		PX4_ERR("guidance params invalid");
+		return false;
+	}
+
+	return true;
+}
+
+bool AttackVision::read_vehicle_guidance_state(VehicleGuidanceState &state)
+{
+	vehicle_attitude_s veh_att{};
+	if (!_vehicle_attitude_sub.copy(&veh_att)) {
+		PX4_WARN("no vehicle attitude");
+		return false;
+	}
+
+	state.q_veh_ned = matrix::Quatf(veh_att.q);
+	matrix::Eulerf euler_veh_ned(state.q_veh_ned);
+	state.veh_roll = euler_veh_ned.phi();
+	state.veh_pitch = euler_veh_ned.theta();
+	state.veh_yaw = euler_veh_ned.psi();
+	state.valid = true;
+	return true;
+}
+
+bool AttackVision::get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNedPose &pose)
+{
+	#ifdef __PX4_POSIX
+		pose.gimbal_roll_ned = _fixed_gimbal_roll_ned;
+		pose.gimbal_pitch_ned = _fixed_gimbal_pitch_ned;
+		pose.gimbal_yaw_ned = _fixed_gimbal_yaw_ned;
+		pose.q_gimbal_ned = matrix::Quatf(matrix::Eulerf(pose.gimbal_roll_ned, pose.gimbal_pitch_ned, pose.gimbal_yaw_ned));
+	#else
+		// 吊舱旋转顺序保持不变：俯仰(pitch，Y轴) → 滚转(roll，X轴) → 偏航(yaw，Z轴)
+		matrix::Quatf q_pitch(matrix::Eulerf(0, _gimbal_pitch, 0));
+		matrix::Quatf q_roll(matrix::Eulerf(_gimbal_roll, 0, 0));
+		matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
+		matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
+		pose.q_gimbal_ned = q_veh_ned * q_gimbal_body;
+
+		matrix::Eulerf euler_gimbal_ned(pose.q_gimbal_ned);
+		pose.gimbal_roll_ned = euler_gimbal_ned.phi();
+		pose.gimbal_pitch_ned = euler_gimbal_ned.theta();
+		pose.gimbal_yaw_ned = euler_gimbal_ned.psi();
+	#endif
+
+	pose.valid = true;
+	return true;
+}
+
+bool AttackVision::build_guidance_command(
+	const VehicleGuidanceState &veh,
+	const GimbalNedPose &gimbal,
+	GuidanceCommand &cmd)
+{
+	if (!veh.valid || !gimbal.valid) {
+		return false;
 	}
 
 	const float att_kp = _param_av_att_kp.get();
@@ -757,81 +843,42 @@ void AttackVision::handle_guidance()
 	const float max_att_error = 0.5f;
 	const float max_vz = 0.8f;
 
-	if (!PX4_ISFINITE(att_kp) || !PX4_ISFINITE(max_forward_v)) {
-		PX4_ERR("guidance params invalid");
-		return;
-	}
-
-	vehicle_attitude_s veh_att{};
-	if (!_vehicle_attitude_sub.copy(&veh_att)) {
-		PX4_WARN("no vehicle attitude");
-		return;
-	}
-
-	// 四元数转欧拉角（核心修改）
-	// 弧度
-	// 无人机姿态四元数（NED坐标系）
-	matrix::Quatf q_veh_ned(veh_att.q);
-	matrix::Eulerf euler_veh_ned(q_veh_ned);
-	const float veh_roll = euler_veh_ned.phi();
-	const float veh_pitch = euler_veh_ned.theta();
-	const float veh_yaw = euler_veh_ned.psi();
-
-	float gimbal_roll_ned = 0.f;
-	float gimbal_pitch_ned = 0.f;
-	float gimbal_yaw_ned = 0.f;
-	matrix::Quatf q_gimbal_ned;
-
-	#ifdef __PX4_POSIX
-		gimbal_roll_ned = _fixed_gimbal_roll_ned;
-		gimbal_pitch_ned = _fixed_gimbal_pitch_ned;
-		gimbal_yaw_ned = _fixed_gimbal_yaw_ned;
-		q_gimbal_ned = matrix::Quatf(matrix::Eulerf(gimbal_roll_ned, gimbal_pitch_ned, gimbal_yaw_ned));
-	#else
-		// 硬件模式：使用原来的逻辑（吊舱相对姿态转换）
-		// 提取吊舱相对无人机的欧拉角（FRD body）
-		// 直接用默认的欧拉角构造四元数，这是不对的，应该按照吊舱的旋转顺序进行定义
-		// 先进行俯仰，再进行滚转，再进行偏航
-
-		// matrix::Eulerf gimbal_body(_gimbal_roll, _gimbal_pitch, _gimbal_yaw);
-		// matrix::Quatf q_gimbal_body(gimbal_body); // 四元数表示吊舱相对无人机的姿态
-
-		// 吊舱旋转顺序：俯仰(pitch，Y轴) → 滚转(roll，X轴) → 偏航(yaw，Z轴)
-		// 1. 俯仰（绕Y轴）
-		matrix::Quatf q_pitch(matrix::Eulerf(0, _gimbal_pitch, 0));
-		// 2. 滚转（绕X轴）
-		matrix::Quatf q_roll(matrix::Eulerf(_gimbal_roll, 0, 0));
-		// 3. 偏航（绕Z轴）
-		matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
-		// 组合吊舱相对无人机的四元数（先俯仰→再滚转→再偏航：右乘优先）
-		matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
-		q_gimbal_ned = q_veh_ned * q_gimbal_body;
-		matrix::Eulerf euler_gimbal_ned(q_gimbal_ned);
-		gimbal_roll_ned = euler_gimbal_ned.phi();
-		gimbal_pitch_ned = euler_gimbal_ned.theta();
-		gimbal_yaw_ned = euler_gimbal_ned.psi();
-	#endif
-
-	matrix::Vector3f forward_vec_ned = q_gimbal_ned.rotateVector(matrix::Vector3f(1.f, 0.f, 0.f));
+	matrix::Vector3f forward_vec_ned = gimbal.q_gimbal_ned.rotateVector(matrix::Vector3f(1.f, 0.f, 0.f));
 	if (forward_vec_ned.norm() > 1e-3f) {
 		forward_vec_ned.normalize();
 	}
 
-	float vx_ned = forward_vec_ned(0) * max_forward_v;
-	float vy_ned = forward_vec_ned(1) * max_forward_v;
-	float vz_ned = math::constrain(forward_vec_ned(2) * max_forward_v, -max_vz, max_vz);
+	cmd.vx_ned = forward_vec_ned(0) * max_forward_v;
+	cmd.vy_ned = forward_vec_ned(1) * max_forward_v;
+	cmd.vz_ned = math::constrain(forward_vec_ned(2) * max_forward_v, -max_vz, max_vz);
 
-	float roll_error = math::constrain(gimbal_roll_ned - veh_roll, -max_att_error, max_att_error);
-	float pitch_error = math::constrain(gimbal_pitch_ned - veh_pitch, -max_att_error, max_att_error);
-	float yaw_error = matrix::wrap_pi(gimbal_yaw_ned - veh_yaw);
+	float roll_error = math::constrain(gimbal.gimbal_roll_ned - veh.veh_roll, -max_att_error, max_att_error);
+	float pitch_error = math::constrain(gimbal.gimbal_pitch_ned - veh.veh_pitch, -max_att_error, max_att_error);
+	float yaw_error = matrix::wrap_pi(gimbal.gimbal_yaw_ned - veh.veh_yaw);
 	yaw_error = math::constrain(yaw_error, -max_att_error, max_att_error);
 
-	float target_roll = math::constrain(veh_roll + att_kp * roll_error, -M_PI_4_F, M_PI_4_F);
-	float target_pitch = math::constrain(veh_pitch + att_kp * pitch_error, -M_PI_2_F / 3.0f, M_PI_2_F / 3.0f);
-	float target_yaw = matrix::wrap_pi(veh_yaw + att_kp * yaw_error);
-	float target_yaw_rate = 0.0f;
+	cmd.target_roll = math::constrain(veh.veh_roll + att_kp * roll_error, -M_PI_4_F, M_PI_4_F);
+	cmd.target_pitch = math::constrain(veh.veh_pitch + att_kp * pitch_error, -M_PI_2_F / 3.0f, M_PI_2_F / 3.0f);
+	cmd.target_yaw = matrix::wrap_pi(veh.veh_yaw + att_kp * yaw_error);
+	cmd.target_yaw_rate = 0.0f;
+	cmd.valid = true;
+	return true;
+}
 
-	publish_attitude_velocity_control(target_roll, target_pitch, target_yaw, vx_ned, vy_ned, vz_ned, target_yaw_rate);
+void AttackVision::publish_guidance_command(const GuidanceCommand &cmd)
+{
+	if (!cmd.valid) {
+		return;
+	}
+
+	publish_attitude_velocity_control(
+		cmd.target_roll,
+		cmd.target_pitch,
+		cmd.target_yaw,
+		cmd.vx_ned,
+		cmd.vy_ned,
+		cmd.vz_ned,
+		cmd.target_yaw_rate);
 }
 
 // ========== 新增：姿态+速度控制发布函数 ==========

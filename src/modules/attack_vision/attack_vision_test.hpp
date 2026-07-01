@@ -17,6 +17,7 @@
 #include <px4_platform_common/module_params.h>
 #include <px4_platform_common/time.h>
 #include <px4_platform_common/px4_work_queue/WorkItem.hpp>
+#include <matrix/matrix/math.hpp>
 #include <uORB/uORB.h>
 #include <uORB/Publication.hpp>
 #include <uORB/PublicationMulti.hpp>
@@ -127,11 +128,43 @@ private:
 	ModuleState _module_state{ModuleState::HOLD};  ///< 当前模块状态
 
 	// ========== 控制逻辑相关 ==========
+	struct VehicleGuidanceState {
+		matrix::Quatf q_veh_ned{};
+		float veh_roll{0.0f};
+		float veh_pitch{0.0f};
+		float veh_yaw{0.0f};
+		bool valid{false};
+	};
+
+	struct GimbalNedPose {
+		matrix::Quatf q_gimbal_ned{};
+		float gimbal_roll_ned{0.0f};
+		float gimbal_pitch_ned{0.0f};
+		float gimbal_yaw_ned{0.0f};
+		bool valid{false};
+	};
+
+	struct GuidanceCommand {
+		float target_roll{0.0f};
+		float target_pitch{0.0f};
+		float target_yaw{0.0f};
+		float vx_ned{0.0f};
+		float vy_ned{0.0f};
+		float vz_ned{0.0f};
+		float target_yaw_rate{0.0f};
+		bool valid{false};
+	};
+
 	float _forward_velocity{1.0f};  ///< 恒定前向速度
 	hrt_abstime _switch_start_time{0};  ///< 模式切换开始时间戳
 	hrt_abstime _last_cmd_publish_time{0};  ///< 上次命令发布的时间戳（用于频率限制）
 	static constexpr uint64_t MIN_CMD_INTERVAL_US = 500000;  ///< 命令发布最小间隔（500ms）
 	void handle_guidance();  ///< 处理制导逻辑：根据像素偏差计算速度指令
+	bool check_guidance_ready();
+	bool read_vehicle_guidance_state(VehicleGuidanceState &state);
+	bool get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNedPose &pose);
+	bool build_guidance_command(const VehicleGuidanceState &veh, const GimbalNedPose &gimbal, GuidanceCommand &cmd);
+	void publish_guidance_command(const GuidanceCommand &cmd);
 	void publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate);  ///< 发布Offboard速度设定值
 	bool switch_to_offboard();  ///< 切换到Offboard模式（如果尚未切换）
 	void switch_to_hold();  ///< 切换到悬停模式（Loiter）
