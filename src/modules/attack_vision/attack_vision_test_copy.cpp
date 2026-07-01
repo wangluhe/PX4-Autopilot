@@ -661,6 +661,64 @@ void AttackVision::switch_to_hold()
 	PX4_INFO("已发送切换到悬停模式命令");
 }
 
+void AttackVision::reset_guidance_state()
+{
+	_module_state = ModuleState::HOLD;
+	_switch_start_time = 0;
+	_allow_takeover = false;
+	_external_mission_active = false;
+	_lock_active = false;
+	_pix_offset_x = 0;
+	_pix_offset_y = 0;
+	_buf_len = 0;
+	_last_frame_time_us = 0;
+}
+
+void AttackVision::safe_stop_guidance()
+{
+	vehicle_status_s vehicle_status{};
+	const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
+	const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
+	const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+
+	PX4_INFO("attack_vision stopping: state=%d, armed=%d, offboard=%d, external_active=%d",
+		(int)_module_state,
+		(int)vehicle_armed,
+		(int)vehicle_in_offboard,
+		(int)_external_mission_active);
+
+	if (vehicle_armed && vehicle_in_offboard) {
+		for (int i = 0; i < 5; ++i) {
+			publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+			usleep(20000);
+		}
+
+		if (_external_mission_active) {
+			PX4_INFO("上位机任务已接管，attack_vision停止发布控制量");
+		} else {
+			for (int i = 0; i < 10; ++i) {
+				vehicle_status_s latest_status{};
+				const bool latest_status_ok = _vehicle_status_sub.copy(&latest_status);
+				const bool still_in_offboard = latest_status_ok &&
+					(latest_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+
+				if (!still_in_offboard) {
+					break;
+				}
+
+				publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+				_last_cmd_publish_time = 0;
+				switch_to_hold();
+				usleep(100000);
+			}
+
+			PX4_INFO("attack_vision stop: Offboard已释放到AUTO_LOITER悬停");
+		}
+	}
+
+	reset_guidance_state();
+}
+
 /**
  * @brief 发布Offboard速度控制指令
  * @param vx 前向速度（m/s，机体系）
@@ -895,15 +953,28 @@ void AttackVision::publish_attitude_velocity_control(
 	float vy_ned, float vz_ned,
 	float target_yaw_rate)
 {
-	// ========== 1. 打印输入参数（原始值+角度转换） ==========
-	PX4_DEBUG("guidance target r=%.2f p=%.2f y=%.2f vx=%.2f vy=%.2f vz=%.2f", (double)target_roll, (double)target_pitch, (double)target_yaw, (double)vx_ned, (double)vy_ned, (double)vz_ned);
+	PX4_DEBUG("guidance target r=%.2f p=%.2f y=%.2f vx=%.2f vy=%.2f vz=%.2f",
+		(double)target_roll,
+		(double)target_pitch,
+		(double)target_yaw,
+		(double)vx_ned,
+		(double)vy_ned,
+		(double)vz_ned);
+
+	if (!PX4_ISFINITE(vx_ned) || !PX4_ISFINITE(vy_ned) || !PX4_ISFINITE(vz_ned) || !PX4_ISFINITE(target_yaw)) {
+		PX4_WARN("skip invalid guidance setpoint");
+		return;
+	}
 
 	offboard_control_mode_s ocm{};
 	ocm.timestamp = hrt_absolute_time();
 	ocm.position = false;
-	ocm.velocity = true;   // 启用速度控制（前向靠近）
-	ocm.attitude = true;   // 启用姿态控制（跟踪吊舱）
+	ocm.velocity = true;
+	ocm.acceleration = false;
+	ocm.attitude = false;
 	ocm.body_rate = false;
+	ocm.thrust_and_torque = false;
+	ocm.direct_actuator = false;
 	_offboard_ctrl_pub.publish(ocm);
 
 	trajectory_setpoint_s sp{};
@@ -917,20 +988,9 @@ void AttackVision::publish_attitude_velocity_control(
 	sp.acceleration[0] = NAN;
 	sp.acceleration[1] = NAN;
 	sp.acceleration[2] = NAN;
-	sp.yaw = NAN;
-	sp.yawspeed = NAN;
+	sp.yaw = target_yaw;
+	sp.yawspeed = PX4_ISFINITE(target_yaw_rate) ? target_yaw_rate : 0.0f;
 	_traj_sp_pub.publish(sp);
-
-	vehicle_attitude_setpoint_s att_sp{};
-	att_sp.timestamp = ocm.timestamp;
-	matrix::Quatf q_target(matrix::Eulerf(target_roll, target_pitch, target_yaw));
-	att_sp.q_d[0] = q_target(0);
-	att_sp.q_d[1] = q_target(1);
-	att_sp.q_d[2] = q_target(2);
-	att_sp.q_d[3] = q_target(3);
-	att_sp.yaw_sp_move_rate = target_yaw_rate;
-	_att_sp_pub.publish(att_sp);
-
 }
 
 /**
@@ -1279,6 +1339,7 @@ void AttackVision::Run()
 		usleep(20000);
 	}
 
+	safe_stop_guidance();
 	close_uart();
 	exit_and_cleanup();
 }

@@ -168,6 +168,8 @@ private:
 	void publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate);  ///< 发布Offboard速度设定值
 	bool switch_to_offboard();  ///< 切换到Offboard模式（如果尚未切换）
 	void switch_to_hold();  ///< 切换到悬停模式（Loiter）
+	void safe_stop_guidance();  ///< stop/退出前释放Offboard控制并进入安全状态
+	void reset_guidance_state();  ///< 清除末制导内部状态，避免重启继承旧数据
 	void parse_frame_data();
 	void close_uart();
 	void print_drone_status();
