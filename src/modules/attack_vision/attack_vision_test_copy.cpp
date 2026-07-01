@@ -406,39 +406,39 @@ void AttackVision::parse_frame_data()
 	// 10: 锁定预测
 	// 11: 退出锁定
 	int lock_state = ((bit10 ? 1 : 0) << 1) | (bit9 ? 1 : 0);
-	const char* lock_state_str = "";
-	switch (lock_state) {
-		case 0: lock_state_str = "00-默认(无效)"; break;
-		case 1: lock_state_str = "01-锁定中"; break;
-		case 2: lock_state_str = "10-锁定预测"; break;
-		case 3: lock_state_str = "11-退出锁定"; break;
-	}
-	PX4_INFO("锁定标识: %s", lock_state_str);
+	// const char* lock_state_str = "";
+	// switch (lock_state) {
+	// 	case 0: lock_state_str = "00-默认(无效)"; break;
+	// 	case 1: lock_state_str = "01-锁定中"; break;
+	// 	case 2: lock_state_str = "10-锁定预测"; break;
+	// 	case 3: lock_state_str = "11-退出锁定"; break;
+	// }
+	// PX4_INFO("锁定标识: %s", lock_state_str);
 
 	// 锁定有效条件：锁定标识位为01（锁定中）且伺服状态为跟踪模式（0x07）
 	// bool locking = (lock_state == 1);  // 01状态表示锁定中
 	bool locking = (lock_state == 1) || (lock_state == 2);  // 01(锁定中) 或 10(锁定预测)
 
 	// 调试输出伺服状态
-	const char* servo_state_str = "";
-	switch (servo_state) {
-		case 0x01: servo_state_str = "载荷关"; break;
-		case 0x02: servo_state_str = "手动"; break;
-		case 0x03: servo_state_str = "收藏"; break;
-		case 0x04: servo_state_str = "数引"; break;
-		case 0x05: servo_state_str = "航向锁定"; break;
-		case 0x06: servo_state_str = "扫描"; break;
-		case 0x07: servo_state_str = "跟踪"; break;
-		case 0x08: servo_state_str = "垂直下视"; break;
-		case 0x09: servo_state_str = "陀螺自动较漂"; break;
-		case 0x0A: servo_state_str = "陀螺温度较漂"; break;
-		case 0x0B: servo_state_str = "航向随动"; break;
-		case 0x0C: servo_state_str = "归中"; break;
-		case 0x0D: servo_state_str = "手动陀螺较漂"; break;
-		case 0x0E: servo_state_str = "姿态指引"; break;
-		default: servo_state_str = "未知"; break;
-	}
-	PX4_INFO("伺服状态: 0x%02X (%s)", servo_state, servo_state_str);
+	// const char* servo_state_str = "";
+	// switch (servo_state) {
+	// 	case 0x01: servo_state_str = "载荷关"; break;
+	// 	case 0x02: servo_state_str = "手动"; break;
+	// 	case 0x03: servo_state_str = "收藏"; break;
+	// 	case 0x04: servo_state_str = "数引"; break;
+	// 	case 0x05: servo_state_str = "航向锁定"; break;
+	// 	case 0x06: servo_state_str = "扫描"; break;
+	// 	case 0x07: servo_state_str = "跟踪"; break;
+	// 	case 0x08: servo_state_str = "垂直下视"; break;
+	// 	case 0x09: servo_state_str = "陀螺自动较漂"; break;
+	// 	case 0x0A: servo_state_str = "陀螺温度较漂"; break;
+	// 	case 0x0B: servo_state_str = "航向随动"; break;
+	// 	case 0x0C: servo_state_str = "归中"; break;
+	// 	case 0x0D: servo_state_str = "手动陀螺较漂"; break;
+	// 	case 0x0E: servo_state_str = "姿态指引"; break;
+	// 	default: servo_state_str = "未知"; break;
+	// }
+	// PX4_INFO("伺服状态: 0x%02X (%s)", servo_state, servo_state_str);
 
 	_lock_active = locking && (servo_state == 0x07);
 
@@ -449,9 +449,9 @@ void AttackVision::parse_frame_data()
 	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
 	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
 	// 调试输出脱靶量
-	PX4_INFO("[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
-		_buf[58], _buf[59], _buf[60], _buf[61]);
-	PX4_INFO("=========================================");
+	// PX4_INFO("[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
+	// 	_buf[58], _buf[59], _buf[60], _buf[61]);
+	// PX4_INFO("=========================================");
 
 	// ========== 新增：解析吊舱姿态角（关键修改） ==========
 	// 假设字节位置（需根据实际协议调整！）：
@@ -467,11 +467,11 @@ void AttackVision::parse_frame_data()
 	_gimbal_yaw = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
 
 	// 打印吊舱姿态（调试用）
-	PX4_INFO("吊舱姿态: 横滚=%.2f° (%.3frad), 俯仰=%.2f° (%.3frad), 方位=%.2f° (%.3frad)",
-		(double)roll_deg_100 / 100.0, (double)_gimbal_roll,
-		(double)pitch_deg_100 / 100.0, (double)_gimbal_pitch,
-		(double)yaw_deg_100 / 100.0, (double)_gimbal_yaw);
-	PX4_INFO("=========================================");
+	// PX4_INFO("吊舱姿态: 横滚=%.2f° (%.3frad), 俯仰=%.2f° (%.3frad), 方位=%.2f° (%.3frad)",
+	// 	(double)roll_deg_100 / 100.0, (double)_gimbal_roll,
+	// 	(double)pitch_deg_100 / 100.0, (double)_gimbal_pitch,
+	// 	(double)yaw_deg_100 / 100.0, (double)_gimbal_yaw);
+	// PX4_INFO("=========================================");
 }
 
 
@@ -644,10 +644,8 @@ void AttackVision::switch_to_hold()
 
 	vehicle_command_s cmd{};
 	cmd.timestamp = now;
-	cmd.param1 = (float)1;      			// 主模式
-	cmd.param2 = (float)4;      			// PX4_CUSTOM_MAIN_MODE_AUTO
-	// cmd.param3 = (float)3;      			// PX4_CUSTOM_SUB_MODE_AUTO_LOITER
-	// cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LAND;  	// 子模式：AUTO_LAND
+	cmd.param1 = (float)1;
+	cmd.param2 = PX4_CUSTOM_MAIN_MODE_AUTO;
 	cmd.param3 = PX4_CUSTOM_SUB_MODE_AUTO_LOITER;
 	cmd.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
 	cmd.target_system = 1;
@@ -910,11 +908,9 @@ void AttackVision::publish_attitude_velocity_control(
 
 	trajectory_setpoint_s sp{};
 	sp.timestamp = ocm.timestamp;
-	// 位置：不控制（设为NaN）
 	sp.position[0] = NAN;
 	sp.position[1] = NAN;
 	sp.position[2] = NAN;
-	// 速度：前向靠近（NED坐标系）
 	sp.velocity[0] = vx_ned;
 	sp.velocity[1] = vy_ned;
 	sp.velocity[2] = vz_ned;
