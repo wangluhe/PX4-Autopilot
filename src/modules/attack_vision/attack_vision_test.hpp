@@ -198,15 +198,6 @@ private:
 	bool _guidance_paused{false};           // soft stop 后暂停末制导，但保留 Offboard 心跳
 
 	// 机载/飞控协同状态输出
-	struct attack_vision_status_s {
-		bool lock_active;
-		bool rc_offboard;
-		bool external_mission_active;
-		bool allow_takeover;
-		int16_t pix_offset_x;
-		int16_t pix_offset_y;
-		uint64_t timestamp;
-	};
 	uORB::PublicationMulti<attack_vision_status_s> _attack_vision_status_pub{ORB_ID(attack_vision_status)};
 
 
