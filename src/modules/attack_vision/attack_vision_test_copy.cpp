@@ -95,7 +95,47 @@ AttackVision *AttackVision::instantiate(int argc, char *argv[])
 
 int AttackVision::custom_command(int argc, char *argv[])
 {
+	if (argc > 0 && strcmp(argv[0], "resume") == 0) {
+		return resume_command();
+	}
+
+	if (argc > 0 && strcmp(argv[0], "kill") == 0) {
+		return stop_command();
+	}
+
 	return print_usage("unknown command");
+}
+
+int AttackVision::soft_stop_command()
+{
+	AttackVision *instance = get_instance();
+
+	if (!instance) {
+		PX4_INFO("not running");
+		return PX4_ERROR;
+	}
+
+	instance->_guidance_paused = true;
+	instance->_module_state = ModuleState::HOLD;
+	instance->_allow_takeover = false;
+	instance->_lock_active = false;
+	instance->_pix_offset_x = 0;
+	instance->_pix_offset_y = 0;
+	PX4_INFO("attack_vision soft stop: 暂停末制导，保留OFFBOARD心跳");
+	return PX4_OK;
+}
+
+int AttackVision::resume_command()
+{
+	AttackVision *instance = get_instance();
+
+	if (!instance) {
+		return PX4_ERROR;
+	}
+
+	instance->_guidance_paused = false;
+	PX4_INFO("attack_vision resume: 允许末制导重新接管");
+	return PX4_OK;
 }
 
 int AttackVision::print_usage(const char *reason)
@@ -133,9 +173,10 @@ int AttackVision::print_usage(const char *reason)
 
 	PRINT_MODULE_USAGE_NAME("attack_vision", "system");
 	PRINT_MODULE_USAGE_COMMAND("start");
-	PRINT_MODULE_USAGE_COMMAND("stop");
+	PRINT_MODULE_USAGE_COMMAND_DESCR("stop", "soft stop: 暂停末制导但保留OFFBOARD心跳");
+	PRINT_MODULE_USAGE_COMMAND_DESCR("resume", "恢复允许末制导接管");
+	PRINT_MODULE_USAGE_COMMAND_DESCR("kill", "真正退出attack_vision模块");
 	PRINT_MODULE_USAGE_COMMAND("status");
-	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 
 	return 0;
 }
@@ -152,6 +193,7 @@ int AttackVision::print_status()
 	PX4_INFO("UART: %s", (_fd >= 0) ? "OPEN" : "CLOSED");
 	PX4_INFO("Target Lock: %s", _lock_active ? "YES" : "NO");
 	PX4_INFO("Pixel Offset: X=%d, Y=%d", (int)_pix_offset_x, (int)_pix_offset_y);
+	PX4_INFO("Guidance Paused: %s", _guidance_paused ? "YES" : "NO");
 
 	const char* state_str = "UNKNOWN";
 	switch (_module_state) {
@@ -676,6 +718,11 @@ void AttackVision::reset_guidance_state()
 
 void AttackVision::safe_stop_guidance()
 {
+	external_mission_active_s external_mission{};
+	if (_external_mission_active_sub.copy(&external_mission)) {
+		_external_mission_active = external_mission.external_mission_active;
+	}
+
 	vehicle_status_s vehicle_status{};
 	const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
 	const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
@@ -696,23 +743,41 @@ void AttackVision::safe_stop_guidance()
 		if (_external_mission_active) {
 			PX4_INFO("上位机任务已接管，attack_vision停止发布控制量");
 		} else {
-			for (int i = 0; i < 10; ++i) {
-				vehicle_status_s latest_status{};
-				const bool latest_status_ok = _vehicle_status_sub.copy(&latest_status);
-				const bool still_in_offboard = latest_status_ok &&
-					(latest_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+			#ifdef __PX4_POSIX
+				PX4_INFO("仿真模式：未收到external_mission_active，attack_vision stop保持OFFBOARD交由上位机接管");
+				for (int i = 0; i < 150; ++i) {
+					vehicle_status_s latest_status{};
+					const bool latest_status_ok = _vehicle_status_sub.copy(&latest_status);
+					const bool still_in_offboard = latest_status_ok &&
+						(latest_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
 
-				if (!still_in_offboard) {
-					break;
+					if (!still_in_offboard) {
+						PX4_WARN("仿真模式：等待上位机接管期间飞控已退出OFFBOARD");
+						break;
+					}
+
+					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+					usleep(20000);
+				}
+			#else
+				for (int i = 0; i < 10; ++i) {
+					vehicle_status_s latest_status{};
+					const bool latest_status_ok = _vehicle_status_sub.copy(&latest_status);
+					const bool still_in_offboard = latest_status_ok &&
+						(latest_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+
+					if (!still_in_offboard) {
+						break;
+					}
+
+					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+					_last_cmd_publish_time = 0;
+					switch_to_hold();
+					usleep(100000);
 				}
 
-				publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-				_last_cmd_publish_time = 0;
-				switch_to_hold();
-				usleep(100000);
-			}
-
-			PX4_INFO("attack_vision stop: Offboard已释放到AUTO_LOITER悬停");
+				PX4_INFO("attack_vision stop: Offboard已释放到AUTO_LOITER悬停");
+			#endif
 		}
 	}
 
@@ -728,6 +793,20 @@ void AttackVision::safe_stop_guidance()
  *
  * 需要同时发布offboard_control_mode和trajectory_setpoint两个话题
  */
+void AttackVision::publish_position_offboard_heartbeat()
+{
+	offboard_control_mode_s ocm{};
+	ocm.timestamp = hrt_absolute_time();
+	ocm.position = true;
+	ocm.velocity = false;
+	ocm.acceleration = false;
+	ocm.attitude = false;
+	ocm.body_rate = false;
+	ocm.thrust_and_torque = false;
+	ocm.direct_actuator = false;
+	_offboard_ctrl_pub.publish(ocm);
+}
+
 void AttackVision::publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate)
 {
 
@@ -1000,14 +1079,14 @@ void AttackVision::print_drone_status()
 {
 	vehicle_local_position_s local_pos{};
 	if (_vehicle_local_position_sub.copy(&local_pos)) {
-		PX4_INFO("=== 无人机实时状态 ===");
-		PX4_INFO("位置: X=%.2fm, Y=%.2fm, Z=%.2fm",
-				(double)local_pos.x, (double)local_pos.y, (double)local_pos.z);
-		PX4_INFO("速度: Vx=%.2fm/s, Vy=%.2fm/s, Vz=%.2fm/s",
-				(double)local_pos.vx, (double)local_pos.vy, (double)local_pos.vz);
-		PX4_INFO("加速度: Ax=%.2fm/s², Ay=%.2fm/s², Az=%.2fm/s²",
-				(double)local_pos.ax, (double)local_pos.ay, (double)local_pos.az);
-		PX4_INFO("偏航角: %.2f°", (double)(local_pos.heading * 180.0f / M_PI_F));
+		// PX4_INFO("=== 无人机实时状态 ===");
+		// PX4_INFO("位置: X=%.2fm, Y=%.2fm, Z=%.2fm",
+		// 		(double)local_pos.x, (double)local_pos.y, (double)local_pos.z);
+		// PX4_INFO("速度: Vx=%.2fm/s, Vy=%.2fm/s, Vz=%.2fm/s",
+		// 		(double)local_pos.vx, (double)local_pos.vy, (double)local_pos.vz);
+		// PX4_INFO("加速度: Ax=%.2fm/s², Ay=%.2fm/s², Az=%.2fm/s²",
+		// 		(double)local_pos.ax, (double)local_pos.ay, (double)local_pos.az);
+		// PX4_INFO("偏航角: %.2f°", (double)(local_pos.heading * 180.0f / M_PI_F));
 	} else {
 		PX4_WARN("无法获取无人机位置信息");
 	}
@@ -1169,9 +1248,10 @@ void AttackVision::Run()
 
 		// 2) 更新上位机协同状态。
 		if (_external_mission_active_sub.updated()) {
-			bool external_active = false;
-			_external_mission_active_sub.copy(&external_active);
-			_external_mission_active = external_active;
+			external_mission_active_s external_mission{};
+			if (_external_mission_active_sub.copy(&external_mission)) {
+				_external_mission_active = external_mission.external_mission_active;
+			}
 		}
 
 		// 3) 更新吊舱帧。
@@ -1189,8 +1269,12 @@ void AttackVision::Run()
 		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
 
-		_allow_takeover = rc_offboard && !_external_mission_active && _lock_active;
+		_allow_takeover = !_guidance_paused && rc_offboard && !_external_mission_active && _lock_active;
 		const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
+
+		if (_guidance_paused) {
+			publish_position_offboard_heartbeat();
+		}
 
 		attack_vision_status_s status{};
 		status.lock_active = _lock_active;
@@ -1347,5 +1431,14 @@ void AttackVision::Run()
 
 extern "C" __EXPORT int attack_vision_main(int argc, char *argv[])
 {
+	if (argc > 1 && strcmp(argv[1], "stop") == 0) {
+		return AttackVision::soft_stop_command();
+	}
+
+	if (argc > 1 && strcmp(argv[1], "kill") == 0) {
+		char *stop_argv[] = {argv[0], const_cast<char *>("stop")};
+		return AttackVision::main(2, stop_argv);
+	}
+
 	return AttackVision::main(argc, argv);
 }

@@ -52,6 +52,8 @@ public:
 	static AttackVision *instantiate(int argc, char *argv[]);
 	static int custom_command(int argc, char *argv[]);
 	static int print_usage(const char *reason = nullptr);
+	static int soft_stop_command();
+	static int resume_command();
 	int print_status() override;
 	void Run() override;
 
@@ -166,6 +168,7 @@ private:
 	bool build_guidance_command(const VehicleGuidanceState &veh, const GimbalNedPose &gimbal, GuidanceCommand &cmd);
 	void publish_guidance_command(const GuidanceCommand &cmd);
 	void publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate);  ///< 发布Offboard速度设定值
+	void publish_position_offboard_heartbeat();  ///< 仅发布位置型 Offboard 心跳，让上位机/MAVROS位置设定点接管
 	bool switch_to_offboard();  ///< 切换到Offboard模式（如果尚未切换）
 	void switch_to_hold();  ///< 切换到悬停模式（Loiter）
 	void safe_stop_guidance();  ///< stop/退出前释放Offboard控制并进入安全状态
@@ -192,6 +195,7 @@ private:
 	uORB::Subscription _external_mission_active_sub{ORB_ID(external_mission_active)};
 	bool _external_mission_active{false};   // 机载ROS是否正在占用Offboard
 	bool _allow_takeover{false};            // 当前是否允许attack_vision接管
+	bool _guidance_paused{false};           // soft stop 后暂停末制导，但保留 Offboard 心跳
 
 	// 机载/飞控协同状态输出
 	struct attack_vision_status_s {
