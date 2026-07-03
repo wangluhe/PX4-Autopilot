@@ -1269,10 +1269,23 @@ void AttackVision::Run()
 		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
 
+		if (_was_vehicle_in_offboard && !vehicle_in_offboard) {
+			_manual_offboard_exit_latched = true;
+			_last_offboard_exit_time = now;
+			PX4_INFO("Detected Offboard exit, suppress auto Offboard re-entry until Offboard is selected again");
+		}
+
+		if (vehicle_in_offboard && _manual_offboard_exit_latched) {
+			PX4_INFO("Offboard selected again, auto Offboard re-entry suppression cleared");
+			_manual_offboard_exit_latched = false;
+		}
+
+		_was_vehicle_in_offboard = vehicle_in_offboard;
+
 		_allow_takeover = !_guidance_paused && rc_offboard && !_external_mission_active && _lock_active;
 		const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
 
-		if (_guidance_paused) {
+		if (_guidance_paused && vehicle_in_offboard && !_external_mission_active) {
 			publish_position_offboard_heartbeat();
 		}
 
@@ -1326,20 +1339,33 @@ void AttackVision::Run()
 					#endif
 						);
 					_module_state = ModuleState::OFFBOARD;
-				} else {
+				} else if (!_manual_offboard_exit_latched) {
 					PX4_INFO("末制导条件满足，开始切换到Offboard模式");
 					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 					_switch_start_time = now;
+				} else {
+					PX4_DEBUG("QGC/外部已切出Offboard，等待再次选择Offboard");
 				}
 			}
 			break;
 
 		case ModuleState::SWITCHING_TO_OFFBOARD:
+			if (_manual_offboard_exit_latched) {
+				PX4_INFO("QGC/外部已切出Offboard，取消自动切回Offboard");
+				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
+				break;
+			}
+
+			if (_external_mission_active) {
+				PX4_INFO("上位机任务已接管，取消attack_vision自动切Offboard");
+				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
+				break;
+			}
+
 			if (!can_control) {
-				PX4_INFO("Offboard切换条件丢失 -> 悬停");
-				if (vehicle_armed) {
-					switch_to_hold();
-				}
+				PX4_INFO("Offboard切换条件丢失，attack_vision回到HOLD");
 				_module_state = ModuleState::HOLD;
 				_switch_start_time = 0;
 				break;
@@ -1364,20 +1390,27 @@ void AttackVision::Run()
 			break;
 
 		case ModuleState::OFFBOARD:
-			if (!can_control) {
-				PX4_INFO("末制导条件丢失 -> 悬停");
-				if (vehicle_armed) {
-					switch_to_hold();
-				}
+			if (_external_mission_active) {
+				PX4_INFO("上位机任务已接管，attack_vision停止末制导并保持让路");
 				_module_state = ModuleState::HOLD;
 				_switch_start_time = 0;
 				break;
 			}
 
 			if (!vehicle_in_offboard) {
-				PX4_WARN("飞控已退出Offboard，重新进入切换状态");
-				_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-				_switch_start_time = now;
+				PX4_INFO("飞控已退出Offboard，attack_vision保持HOLD且不自动拉回");
+				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
+				break;
+			}
+
+			if (!can_control) {
+				PX4_INFO("末制导条件丢失，attack_vision回到HOLD");
+				if (vehicle_armed && vehicle_in_offboard && !_manual_offboard_exit_latched) {
+					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+				}
+				_module_state = ModuleState::HOLD;
+				_switch_start_time = 0;
 				break;
 			}
 

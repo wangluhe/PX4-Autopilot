@@ -160,6 +160,9 @@ private:
 	float _forward_velocity{1.0f};  ///< 恒定前向速度
 	hrt_abstime _switch_start_time{0};  ///< 模式切换开始时间戳
 	hrt_abstime _last_cmd_publish_time{0};  ///< 上次命令发布的时间戳（用于频率限制）
+	hrt_abstime _last_offboard_exit_time{0};  ///< 最近一次检测到人工退出Offboard的时间戳
+	bool _manual_offboard_exit_latched{false};  ///< QGC/外部切出Offboard后禁止自动拉回
+	bool _was_vehicle_in_offboard{false};  ///< 用于检测Offboard退出边沿
 	static constexpr uint64_t MIN_CMD_INTERVAL_US = 500000;  ///< 命令发布最小间隔（500ms）
 	void handle_guidance();  ///< 处理制导逻辑：根据像素偏差计算速度指令
 	bool check_guidance_ready();
@@ -198,7 +201,7 @@ private:
 	bool _guidance_paused{false};           // soft stop 后暂停末制导，但保留 Offboard 心跳
 
 	// 机载/飞控协同状态输出
-	uORB::PublicationMulti<attack_vision_status_s> _attack_vision_status_pub{ORB_ID(attack_vision_status)};
+	uORB::Publication<attack_vision_status_s> _attack_vision_status_pub{ORB_ID(attack_vision_status)};
 
 
 	// ========== 模块参数 ==========
