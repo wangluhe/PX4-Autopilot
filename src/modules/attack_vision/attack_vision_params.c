@@ -80,4 +80,18 @@ PARAM_DEFINE_INT32(AV_STRATEGY, 2);
  */
 PARAM_DEFINE_FLOAT(AV_FORWARD_V, 1.0f);
 
+/**
+ * 外部任务协同模式
+ *
+ * 0: Standalone，忽略external_mission_active，仅由attack_vision单独末制导
+ * 1: Coordinated，严格使用上位机external_mission_active协同状态
+ * 2: Auto，收到上位机协同状态时使用Coordinated，否则退回Standalone
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 2
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_EXT_MODE, 1);
+
 

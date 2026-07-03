@@ -184,6 +184,7 @@ private:
 						float vy_ned, float vz_ned,
 						float target_yaw_rate);
 	bool switch_to_offboard_sim();  ///< 仿真模式下切换到Offboard模式（直接执行，跳过RC检查）
+	void update_external_mission_state(uint64_t now_us);
 
 	// ========== uORB话题订阅和发布 ==========
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};  ///< 订阅载具状态
@@ -195,8 +196,16 @@ private:
 	uORB::Publication<vehicle_attitude_setpoint_s> _att_sp_pub{ORB_ID(vehicle_attitude_setpoint)};
 
 	// ========== 机载协同相关 ==========
+	static constexpr int AV_EXT_MODE_STANDALONE = 0;
+	static constexpr int AV_EXT_MODE_COORDINATED = 1;
+	static constexpr int AV_EXT_MODE_AUTO = 2;
+	static constexpr uint64_t EXTERNAL_MISSION_TIMEOUT_US = 1000000;
 	uORB::Subscription _external_mission_active_sub{ORB_ID(external_mission_active)};
-	bool _external_mission_active{false};   // 机载ROS是否正在占用Offboard
+	bool _external_mission_active{false};   // 生效后的机载ROS是否正在占用Offboard
+	bool _external_mission_active_raw{false};   // uORB原始external_mission_active输入
+	bool _external_mission_seen{false};   // 是否接收过上位机协同状态
+	bool _coordinated_mode_active{false};   // 当前是否按上位机协同模式运行
+	hrt_abstime _last_external_mission_time_us{0};   // 最近一次收到上位机协同状态的时间
 	bool _allow_takeover{false};            // 当前是否允许attack_vision接管
 	bool _guidance_paused{false};           // soft stop 后暂停末制导，但保留 Offboard 心跳
 
@@ -214,7 +223,8 @@ private:
 		(ParamFloat<px4::params::AV_ATT_KP>) _param_av_att_kp,  // 姿态控制增益（新增复用）
 		(ParamFloat<px4::params::AV_APPROACH_V>) _param_av_approach_v,  // 最大接近速度
 		(ParamInt<px4::params::AV_STRATEGY>) _param_av_strategy,  // 控制策略（1=姿态控制）
-		(ParamFloat<px4::params::AV_FORWARD_V>) _param_av_forward_v
+		(ParamFloat<px4::params::AV_FORWARD_V>) _param_av_forward_v,
+		(ParamInt<px4::params::AV_EXT_MODE>) _param_av_ext_mode
 	)
 };
 

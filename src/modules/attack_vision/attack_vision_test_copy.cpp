@@ -709,6 +709,10 @@ void AttackVision::reset_guidance_state()
 	_switch_start_time = 0;
 	_allow_takeover = false;
 	_external_mission_active = false;
+	_external_mission_active_raw = false;
+	_external_mission_seen = false;
+	_coordinated_mode_active = false;
+	_last_external_mission_time_us = 0;
 	_lock_active = false;
 	_pix_offset_x = 0;
 	_pix_offset_y = 0;
@@ -716,12 +720,43 @@ void AttackVision::reset_guidance_state()
 	_last_frame_time_us = 0;
 }
 
+void AttackVision::update_external_mission_state(uint64_t now_us)
+{
+	if (_external_mission_active_sub.updated()) {
+		external_mission_active_s external_mission{};
+		if (_external_mission_active_sub.copy(&external_mission)) {
+			_external_mission_active_raw = external_mission.external_mission_active;
+			_external_mission_seen = true;
+			_last_external_mission_time_us = now_us;
+		}
+	}
+
+	const int mode = math::constrain(_param_av_ext_mode.get(), AV_EXT_MODE_STANDALONE, AV_EXT_MODE_AUTO);
+	const bool external_recent = _external_mission_seen &&
+		((now_us - _last_external_mission_time_us) < EXTERNAL_MISSION_TIMEOUT_US);
+
+	switch (mode) {
+	case AV_EXT_MODE_STANDALONE:
+		_coordinated_mode_active = false;
+		_external_mission_active = false;
+		break;
+
+	case AV_EXT_MODE_COORDINATED:
+		_coordinated_mode_active = true;
+		_external_mission_active = _external_mission_active_raw;
+		break;
+
+	case AV_EXT_MODE_AUTO:
+	default:
+		_coordinated_mode_active = external_recent;
+		_external_mission_active = _coordinated_mode_active ? _external_mission_active_raw : false;
+		break;
+	}
+}
+
 void AttackVision::safe_stop_guidance()
 {
-	external_mission_active_s external_mission{};
-	if (_external_mission_active_sub.copy(&external_mission)) {
-		_external_mission_active = external_mission.external_mission_active;
-	}
+	update_external_mission_state(hrt_absolute_time());
 
 	vehicle_status_s vehicle_status{};
 	const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
@@ -1246,13 +1281,8 @@ void AttackVision::Run()
 
 		const bool rc_offboard = (_current_rc_mode == RCMode::MODE_OFFBOARD);
 
-		// 2) 更新上位机协同状态。
-		if (_external_mission_active_sub.updated()) {
-			external_mission_active_s external_mission{};
-			if (_external_mission_active_sub.copy(&external_mission)) {
-				_external_mission_active = external_mission.external_mission_active;
-			}
-		}
+		// 2) 更新上位机协同状态，并根据AV_EXT_MODE计算实际生效的外部任务占用状态。
+		update_external_mission_state(now);
 
 		// 3) 更新吊舱帧。
 		static uint64_t last_frame_log_time = 0;
@@ -1344,7 +1374,9 @@ void AttackVision::Run()
 					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
 					_switch_start_time = now;
 				} else {
-					PX4_DEBUG("QGC/外部已切出Offboard，等待再次选择Offboard");
+					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+					last_control_time = now;
+					PX4_DEBUG("QGC/外部已切出Offboard，仅预热Offboard setpoint，等待再次选择Offboard");
 				}
 			}
 			break;
@@ -1424,10 +1456,13 @@ void AttackVision::Run()
 		if (now - last_status_time > 5000000) {
 			const uint64_t time_since_last = (_last_frame_time_us > 0) ? (now - _last_frame_time_us) : UINT64_MAX;
 			if (has_vehicle_status) {
-				PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, external_active=%d, lock=%d, frame_valid=%d, allow_takeover=%d, can_control=%d, module_state=%d",
+				PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, ext_mode=%d, coord=%d, external_raw=%d, external_active=%d, lock=%d, frame_valid=%d, allow_takeover=%d, can_control=%d, module_state=%d",
 					vehicle_status.nav_state,
 					vehicle_status.arming_state,
 					(int)_current_rc_mode,
+					(int)_param_av_ext_mode.get(),
+					(int)_coordinated_mode_active,
+					(int)_external_mission_active_raw,
 					(int)_external_mission_active,
 					(int)_lock_active,
 					(int)frame_valid_recent,
