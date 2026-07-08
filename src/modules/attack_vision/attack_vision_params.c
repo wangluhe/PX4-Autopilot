@@ -81,6 +81,64 @@ PARAM_DEFINE_INT32(AV_STRATEGY, 2);
 PARAM_DEFINE_FLOAT(AV_FORWARD_V, 1.0f);
 
 /**
+ * 图像宽度，用于把像素脱靶量换算为目标视线角
+ * @group Attack Vision
+ * @min 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_CAM_W, 1920);
+
+/**
+ * 图像高度，用于把像素脱靶量换算为目标视线角
+ * @group Attack Vision
+ * @min 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_CAM_H, 1080);
+
+/**
+ * 相机水平视场角，默认使用CGTD055宽视场
+ * @group Attack Vision
+ * @unit deg
+ * @min 1
+ * @max 179
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_FOV_H, 70.4f);
+
+/**
+ * 相机垂直视场角，默认使用CGTD055宽视场
+ * @group Attack Vision
+ * @unit deg
+ * @min 1
+ * @max 179
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_FOV_V, 39.6f);
+
+/**
+ * 像素Y方向符号转换
+ *
+ * 1: 脱靶量Y按笛卡尔坐标向上为正，转换到FRD坐标时取反
+ * 0: 脱靶量Y按图像坐标向下为正，转换到FRD坐标时不取反
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_PIX_Y_INV, 1);
+
+/**
+ * 末制导垂向速度限幅，NED坐标下向下为正
+ * @group Attack Vision
+ * @unit m/s
+ * @min 0
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_MAX_VZ, 0.8f);
+
+/**
  * 外部任务协同模式
  *
  * 0: Standalone，忽略external_mission_active，仅由attack_vision单独末制导
@@ -93,5 +151,4 @@ PARAM_DEFINE_FLOAT(AV_FORWARD_V, 1.0f);
  * @reboot_required false
  */
 PARAM_DEFINE_INT32(AV_EXT_MODE, 1);
-
 

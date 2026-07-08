@@ -731,7 +731,8 @@ void AttackVision::update_external_mission_state(uint64_t now_us)
 		}
 	}
 
-	const int mode = math::constrain(_param_av_ext_mode.get(), AV_EXT_MODE_STANDALONE, AV_EXT_MODE_AUTO);
+	// NuttX交叉编译下math::constrain要求三者类型一致，这里统一为int避免模板推导失败。
+	const int mode = math::constrain(static_cast<int>(_param_av_ext_mode.get()), AV_EXT_MODE_STANDALONE, AV_EXT_MODE_AUTO);
 	const bool external_recent = _external_mission_seen &&
 		((now_us - _last_external_mission_time_us) < EXTERNAL_MISSION_TIMEOUT_US);
 
@@ -932,8 +933,18 @@ void AttackVision::handle_guidance()
 		return;
 	}
 
+	VisionTarget target{};
+	if (!build_vision_target(target)) {
+		return;
+	}
+
+	CameraModel camera{};
+	if (!build_camera_model(camera)) {
+		return;
+	}
+
 	GuidanceCommand cmd{};
-	if (!build_guidance_command(veh, gimbal, cmd)) {
+	if (!build_guidance_command(veh, gimbal, target, camera, cmd)) {
 		return;
 	}
 
@@ -946,10 +957,20 @@ bool AttackVision::check_guidance_ready()
 		return false;
 	}
 
-	const float att_kp = _param_av_att_kp.get();
 	const float max_forward_v = _param_av_forward_v.get();
+	const float max_vz = _param_av_max_vz.get();
+	const float fov_h_deg = _param_av_fov_h.get();
+	const float fov_v_deg = _param_av_fov_v.get();
+	const int cam_w = _param_av_cam_w.get();
+	const int cam_h = _param_av_cam_h.get();
 
-	if (!PX4_ISFINITE(att_kp) || !PX4_ISFINITE(max_forward_v)) {
+	// 制导算法依赖相机内参和速度限幅，参数异常时直接跳过本周期控制。
+	if (!PX4_ISFINITE(max_forward_v) || !PX4_ISFINITE(max_vz) ||
+	    !PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
+	    max_forward_v < 0.0f || max_vz < 0.0f ||
+	    fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
+	    fov_v_deg <= 0.0f || fov_v_deg >= 179.0f ||
+	    cam_w <= 0 || cam_h <= 0) {
 		PX4_ERR("guidance params invalid");
 		return false;
 	}
@@ -999,37 +1020,109 @@ bool AttackVision::get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNed
 	return true;
 }
 
-bool AttackVision::build_guidance_command(
-	const VehicleGuidanceState &veh,
-	const GimbalNedPose &gimbal,
-	GuidanceCommand &cmd)
+bool AttackVision::build_vision_target(VisionTarget &target)
 {
-	if (!veh.valid || !gimbal.valid) {
+	// 只封装当前帧的像素脱靶量；以后可在这里加入锁定质量、目标框大小等视觉量。
+	target.pix_offset_x = _pix_offset_x;
+	target.pix_offset_y = _pix_offset_y;
+	target.valid = _lock_active;
+	return target.valid;
+}
+
+bool AttackVision::build_camera_model(CameraModel &camera)
+{
+	const int cam_w = _param_av_cam_w.get();
+	const int cam_h = _param_av_cam_h.get();
+	const float fov_h_deg = _param_av_fov_h.get();
+	const float fov_v_deg = _param_av_fov_v.get();
+
+	if (cam_w <= 0 || cam_h <= 0 ||
+		!PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
+		fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
+		fov_v_deg <= 0.0f || fov_v_deg >= 179.0f) {
 		return false;
 	}
 
-	const float att_kp = _param_av_att_kp.get();
-	const float max_forward_v = _param_av_forward_v.get();
-	const float max_att_error = 0.5f;
-	const float max_vz = 0.8f;
+	// 默认参数来自CGTD055宽视场1080P；变倍后可通过参数切换到窄视场。
+	camera.width_px = static_cast<float>(cam_w);
+	camera.height_px = static_cast<float>(cam_h);
+	camera.fov_h_rad = fov_h_deg * M_PI_F / 180.0f;
+	camera.fov_v_rad = fov_v_deg * M_PI_F / 180.0f;
+	camera.pixel_y_positive_up = (_param_av_pix_y_inv.get() != 0);
+	camera.valid = true;
+	return true;
+}
 
-	matrix::Vector3f forward_vec_ned = gimbal.q_gimbal_ned.rotateVector(matrix::Vector3f(1.f, 0.f, 0.f));
-	if (forward_vec_ned.norm() > 1e-3f) {
-		forward_vec_ned.normalize();
+bool AttackVision::build_target_los_gimbal(
+	const VisionTarget &target,
+	const CameraModel &camera,
+	matrix::Vector3f &los_gimbal)
+{
+	if (!target.valid || !camera.valid) {
+		return false;
 	}
 
-	cmd.vx_ned = forward_vec_ned(0) * max_forward_v;
-	cmd.vy_ned = forward_vec_ned(1) * max_forward_v;
-	cmd.vz_ned = math::constrain(forward_vec_ned(2) * max_forward_v, -max_vz, max_vz);
+	const float half_w = camera.width_px * 0.5f;
+	const float half_h = camera.height_px * 0.5f;
 
-	float roll_error = math::constrain(gimbal.gimbal_roll_ned - veh.veh_roll, -max_att_error, max_att_error);
-	float pitch_error = math::constrain(gimbal.gimbal_pitch_ned - veh.veh_pitch, -max_att_error, max_att_error);
-	float yaw_error = matrix::wrap_pi(gimbal.gimbal_yaw_ned - veh.veh_yaw);
-	yaw_error = math::constrain(yaw_error, -max_att_error, max_att_error);
+	if (half_w <= 0.0f || half_h <= 0.0f) {
+		return false;
+	}
 
-	cmd.target_roll = math::constrain(veh.veh_roll + att_kp * roll_error, -M_PI_4_F, M_PI_4_F);
-	cmd.target_pitch = math::constrain(veh.veh_pitch + att_kp * pitch_error, -M_PI_2_F / 3.0f, M_PI_2_F / 3.0f);
-	cmd.target_yaw = matrix::wrap_pi(veh.veh_yaw + att_kp * yaw_error);
+	// 脱靶量按画面中心为0，限幅到半幅画面，避免异常帧把视线推到视场外。
+	const float pix_x = math::constrain(static_cast<float>(target.pix_offset_x), -half_w, half_w);
+	const float pix_y = math::constrain(static_cast<float>(target.pix_offset_y), -half_h, half_h);
+
+	// 针孔模型：像素偏差 -> 归一化相机平面偏差；吊舱/机体坐标均为FRD（前右下）。
+	const float right_tan = (pix_x / half_w) * tanf(camera.fov_h_rad * 0.5f);
+	const float y_tan = (pix_y / half_h) * tanf(camera.fov_v_rad * 0.5f);
+	const float down_tan = camera.pixel_y_positive_up ? -y_tan : y_tan;
+
+	los_gimbal = matrix::Vector3f(1.0f, right_tan, down_tan);
+
+	if (los_gimbal.norm() <= 1e-3f) {
+		return false;
+	}
+
+	los_gimbal.normalize();
+	return true;
+}
+
+bool AttackVision::build_guidance_command(
+	const VehicleGuidanceState &veh,
+	const GimbalNedPose &gimbal,
+	const VisionTarget &target,
+	const CameraModel &camera,
+	GuidanceCommand &cmd)
+{
+	if (!veh.valid || !gimbal.valid || !target.valid || !camera.valid) {
+		return false;
+	}
+
+	const float max_forward_v = _param_av_forward_v.get();
+	const float max_vz = _param_av_max_vz.get();
+
+	matrix::Vector3f los_gimbal{};
+	if (!build_target_los_gimbal(target, camera, los_gimbal)) {
+		return false;
+	}
+
+	// 将“吊舱姿态 + 像素修正”后的目标视线转到NED，速度始终沿真实目标视线飞。
+	matrix::Vector3f target_vec_ned = gimbal.q_gimbal_ned.rotateVector(los_gimbal);
+	if (target_vec_ned.norm() <= 1e-3f) {
+		return false;
+	}
+
+	target_vec_ned.normalize();
+
+	cmd.vx_ned = target_vec_ned(0) * max_forward_v;
+	cmd.vy_ned = target_vec_ned(1) * max_forward_v;
+	cmd.vz_ned = math::constrain(target_vec_ned(2) * max_forward_v, -max_vz, max_vz);
+
+	// 当前Offboard只启用velocity和yaw，roll/pitch不作为控制量；保留字段便于后续扩展。
+	cmd.target_roll = veh.veh_roll;
+	cmd.target_pitch = veh.veh_pitch;
+	cmd.target_yaw = matrix::wrap_pi(atan2f(target_vec_ned(1), target_vec_ned(0)));
 	cmd.target_yaw_rate = 0.0f;
 	cmd.valid = true;
 	return true;
@@ -1287,8 +1380,8 @@ void AttackVision::Run()
 		// 3) 更新吊舱帧。
 		static uint64_t last_frame_log_time = 0;
 		if (try_read_frame() && now - last_frame_log_time > 3000000) {
-			PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
-				(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+			// PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
+			// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
 			last_frame_log_time = now;
 		}
 

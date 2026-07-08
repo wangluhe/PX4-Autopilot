@@ -146,6 +146,23 @@ private:
 		bool valid{false};
 	};
 
+	// 视觉目标信息：脱靶量保留为像素，便于后续替换更高级的视觉制导模型。
+	struct VisionTarget {
+		int16_t pix_offset_x{0};
+		int16_t pix_offset_y{0};
+		bool valid{false};
+	};
+
+	// 相机模型：默认按宽视场1080P，像素脱靶量通过视场角转换为目标视线。
+	struct CameraModel {
+		float width_px{1920.0f};
+		float height_px{1080.0f};
+		float fov_h_rad{0.0f};
+		float fov_v_rad{0.0f};
+		bool pixel_y_positive_up{true};
+		bool valid{false};
+	};
+
 	struct GuidanceCommand {
 		float target_roll{0.0f};
 		float target_pitch{0.0f};
@@ -168,7 +185,11 @@ private:
 	bool check_guidance_ready();
 	bool read_vehicle_guidance_state(VehicleGuidanceState &state);
 	bool get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNedPose &pose);
-	bool build_guidance_command(const VehicleGuidanceState &veh, const GimbalNedPose &gimbal, GuidanceCommand &cmd);
+	bool build_vision_target(VisionTarget &target);
+	bool build_camera_model(CameraModel &camera);
+	bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &camera, matrix::Vector3f &los_gimbal);
+	bool build_guidance_command(const VehicleGuidanceState &veh, const GimbalNedPose &gimbal,
+					const VisionTarget &target, const CameraModel &camera, GuidanceCommand &cmd);
 	void publish_guidance_command(const GuidanceCommand &cmd);
 	void publish_offboard_velocity(float vx, float vy, float vz, float yaw_rate);  ///< 发布Offboard速度设定值
 	void publish_position_offboard_heartbeat();  ///< 仅发布位置型 Offboard 心跳，让上位机/MAVROS位置设定点接管
@@ -224,8 +245,12 @@ private:
 		(ParamFloat<px4::params::AV_APPROACH_V>) _param_av_approach_v,  // 最大接近速度
 		(ParamInt<px4::params::AV_STRATEGY>) _param_av_strategy,  // 控制策略（1=姿态控制）
 		(ParamFloat<px4::params::AV_FORWARD_V>) _param_av_forward_v,
-		(ParamInt<px4::params::AV_EXT_MODE>) _param_av_ext_mode
+		(ParamInt<px4::params::AV_EXT_MODE>) _param_av_ext_mode,
+		(ParamInt<px4::params::AV_CAM_W>) _param_av_cam_w,
+		(ParamInt<px4::params::AV_CAM_H>) _param_av_cam_h,
+		(ParamFloat<px4::params::AV_FOV_H>) _param_av_fov_h,
+		(ParamFloat<px4::params::AV_FOV_V>) _param_av_fov_v,
+		(ParamInt<px4::params::AV_PIX_Y_INV>) _param_av_pix_y_inv,
+		(ParamFloat<px4::params::AV_MAX_VZ>) _param_av_max_vz
 	)
 };
-
-
