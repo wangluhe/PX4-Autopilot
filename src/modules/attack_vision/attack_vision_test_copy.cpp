@@ -185,6 +185,8 @@ int AttackVision::print_status()
 {
 	uint64_t now_us = hrt_absolute_time();
 	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
+	const bool frame_valid_recent = (_last_frame_time_us > 0) && (time_since_last_frame < FRAME_TIMEOUT_US);
+	const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (time_since_last_frame / 1000) : UINT32_MAX;
 
 	vehicle_status_s vs{};
 	bool has_status = _vehicle_status_sub.copy(&vs);
@@ -193,7 +195,19 @@ int AttackVision::print_status()
 	PX4_INFO("UART: %s", (_fd >= 0) ? "OPEN" : "CLOSED");
 	PX4_INFO("Target Lock: %s", _lock_active ? "YES" : "NO");
 	PX4_INFO("Pixel Offset: X=%d, Y=%d", (int)_pix_offset_x, (int)_pix_offset_y);
+	PX4_INFO("Frame Valid: %s, Age: %llu ms",
+		frame_valid_recent ? "YES" : "NO",
+		(unsigned long long)frame_age_ms);
 	PX4_INFO("Guidance Paused: %s", _guidance_paused ? "YES" : "NO");
+	PX4_INFO("Gimbal Angle: roll=%.2f deg, pitch=%.2f deg, yaw=%.2f deg",
+	(double)(_gimbal_roll * 180.0f / M_PI_F),
+	(double)(_gimbal_pitch * 180.0f / M_PI_F),
+	(double)(_gimbal_yaw * 180.0f / M_PI_F));
+
+	PX4_INFO("Gimbal Raw: roll=%d, pitch=%d, yaw=%d deg100",
+		(int)roll_deg_100,
+		(int)pitch_deg_100,
+		(int)yaw_deg_100);
 
 	const char* state_str = "UNKNOWN";
 	switch (_module_state) {
@@ -207,7 +221,11 @@ int AttackVision::print_status()
 		PX4_INFO("Vehicle: nav_state=%d, arming_state=%d", vs.nav_state, vs.arming_state);
 	}
 
-	PX4_INFO("Last Frame: %.3f ms ago", (double)(time_since_last_frame) / 1000.0);
+	if (_last_frame_time_us > 0) {
+		PX4_INFO("Last Frame: %.3f ms ago", (double)(time_since_last_frame) / 1000.0);
+	} else {
+		PX4_INFO("Last Frame: never");
+	}
 
 	return 0;
 }
@@ -229,6 +247,11 @@ bool AttackVision::configure_uart(int baudrate)
 	}
 	cfmakeraw(&t);  // 设置为原始模式（无行缓冲、无回显等）
 	t.c_cflag |= CLOCAL | CREAD;  // 本地连接，启用接收器
+#ifdef CRTSCTS
+	t.c_cflag &= ~CRTSCTS;  // 不使用硬件流控，避免未接RTS/CTS时阻塞
+#endif
+	t.c_cc[VMIN] = 0;   // 配合O_NONBLOCK：无数据时read立即返回
+	t.c_cc[VTIME] = 0;  // 不在驱动层等待字符超时
 
 	// 根据参数设置波特率
 	speed_t speed = B115200;
@@ -273,7 +296,7 @@ bool AttackVision::open_uart()
 
 	PX4_INFO("Attempting to open hardware UART: %s", dev);
 
-	_fd = ::open(dev, O_RDWR | O_NOCTTY);
+	_fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (_fd < 0) {
 		PX4_ERR("Failed to open %s: %s (errno=%d)", dev, strerror(errno), errno);
 		return false;
@@ -289,7 +312,6 @@ bool AttackVision::open_uart()
 		return false;
 	}
 
-	// 修复格式符问题
 	PX4_INFO("UART configured with baudrate: %ld", _param_av_baud.get());
 	return true;
 	#endif
@@ -367,10 +389,10 @@ bool AttackVision::try_read_frame()
 		ssize_t n = ::read(_fd, read_buf, sizeof(read_buf));
 
 		if (n == 0) {
-			// 没有数据可读（非阻塞模式正常）
+			// 无数据可读（非阻塞/VMIN=0语义）
 			return false;
 		} else if (n < 0) {
-			if (errno == EAGAIN) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			// 非阻塞模式下没有数据是正常的
 			return false;
 			} else {
@@ -513,6 +535,10 @@ void AttackVision::parse_frame_data()
 	// 	(double)roll_deg_100 / 100.0, (double)_gimbal_roll,
 	// 	(double)pitch_deg_100 / 100.0, (double)_gimbal_pitch,
 	// 	(double)yaw_deg_100 / 100.0, (double)_gimbal_yaw);
+	// PX4_INFO("gimbal raw angle: roll=%.2f pitch=%.2f yaw=%.2f deg",
+	// 	(double)roll_deg_100 / 100.0,
+	// 	(double)pitch_deg_100 / 100.0,
+	// 	(double)yaw_deg_100 / 100.0);
 	// PX4_INFO("=========================================");
 }
 
@@ -1352,7 +1378,6 @@ void AttackVision::Run()
 		}
 	#endif
 
-	const uint64_t frame_timeout_us = 200000;
 	const uint64_t control_timeout_us = 50000;
 	static uint64_t last_status_time = 0;
 	static uint64_t last_control_time = 0;
@@ -1388,7 +1413,8 @@ void AttackVision::Run()
 		// 4) 更新飞控状态和统一接管判定。
 		vehicle_status_s vehicle_status{};
 		const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
-		const bool frame_valid_recent = (_last_frame_time_us > 0) && ((now - _last_frame_time_us) < frame_timeout_us);
+		const uint64_t frame_age_us = (_last_frame_time_us > 0) ? (now - _last_frame_time_us) : UINT64_MAX;
+		const bool frame_valid_recent = (_last_frame_time_us > 0) && (frame_age_us < FRAME_TIMEOUT_US);
 		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
 
@@ -1417,8 +1443,12 @@ void AttackVision::Run()
 		status.rc_offboard = rc_offboard;
 		status.external_mission_active = _external_mission_active;
 		status.allow_takeover = _allow_takeover;
+		status.frame_valid = frame_valid_recent;
 		status.pix_offset_x = _pix_offset_x;
 		status.pix_offset_y = _pix_offset_y;
+		const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (frame_age_us / 1000) : UINT32_MAX;
+		status.frame_age_ms = (frame_age_ms > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(frame_age_ms);
+		status.module_state = static_cast<uint8_t>(_module_state);
 		status.timestamp = now;
 		_attack_vision_status_pub.publish(status);
 
@@ -1547,7 +1577,7 @@ void AttackVision::Run()
 		}
 
 		if (now - last_status_time > 5000000) {
-			const uint64_t time_since_last = (_last_frame_time_us > 0) ? (now - _last_frame_time_us) : UINT64_MAX;
+			const uint64_t time_since_last = frame_age_us;
 			if (has_vehicle_status) {
 				PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, ext_mode=%d, coord=%d, external_raw=%d, external_active=%d, lock=%d, frame_valid=%d, allow_takeover=%d, can_control=%d, module_state=%d",
 					vehicle_status.nav_state,
