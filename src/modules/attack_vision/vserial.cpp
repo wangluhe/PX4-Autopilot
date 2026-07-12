@@ -274,9 +274,9 @@ void VSerial::generate_sim_data()
 
 	// 调试信息
 	if (frame_counter % 25 == 0) {  // 每1秒打印一次
-		PX4_INFO("闭环控制状态: offset=(%d,%d), control=(%.3f,%.3f), locked=%d",
-				_current_offset_x, _current_offset_y,
-				(double)_last_vx, (double)_last_vy,
-				(int)target_locked);
+		// PX4_INFO("闭环控制状态: offset=(%d,%d), control=(%.3f,%.3f), locked=%d",
+		// 		_current_offset_x, _current_offset_y,
+		// 		(double)_last_vx, (double)_last_vy,
+		// 		(int)target_locked);
 	}
 }

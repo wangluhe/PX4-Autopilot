@@ -34,6 +34,7 @@
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/attack_vision_status.h>
 #include <uORB/topics/external_mission_active.h>
+#include <uORB/topics/parameter_update.h>
 
 /**
  * @class AttackVision
@@ -121,6 +122,10 @@ private:
 	float _gimbal_roll{0.0f};   // 吊舱横滚角（弧度）
 	float _gimbal_pitch{0.0f};  // 吊舱俯仰角（弧度）
 	float _gimbal_yaw{0.0f};    // 吊舱方位角（弧度）
+	matrix::Vector3f _last_los_gimbal{};      // 最近一次像素脱靶量转换出的吊舱FRD视线
+	matrix::Vector3f _last_target_vec_ned{};  // 最近一次转换到NED的目标视线
+	bool _last_los_gimbal_valid{false};
+	bool _last_target_vec_ned_valid{false};
 
 	// ========== 状态机相关 ==========
 	enum class ModuleState {
@@ -211,6 +216,7 @@ private:
 	// ========== uORB话题订阅和发布 ==========
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};  ///< 订阅载具状态
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};  // 订阅无人机当前姿态
+	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};  ///< 订阅参数更新，支持运行中调参
 	uORB::Publication<offboard_control_mode_s> _offboard_ctrl_pub{ORB_ID(offboard_control_mode)};  ///< 发布Offboard控制模式
 	uORB::Publication<trajectory_setpoint_s> _traj_sp_pub{ORB_ID(trajectory_setpoint)};  ///< 发布轨迹设定点（速度指令）
 	uORB::Publication<vehicle_command_s> _vehicle_cmd_pub{ORB_ID(vehicle_command)};  ///< 发布载具命令（模式切换等）
@@ -251,7 +257,18 @@ private:
 		(ParamInt<px4::params::AV_CAM_H>) _param_av_cam_h,
 		(ParamFloat<px4::params::AV_FOV_H>) _param_av_fov_h,
 		(ParamFloat<px4::params::AV_FOV_V>) _param_av_fov_v,
+		(ParamInt<px4::params::AV_PIX_X_INV>) _param_av_pix_x_inv,
 		(ParamInt<px4::params::AV_PIX_Y_INV>) _param_av_pix_y_inv,
-		(ParamFloat<px4::params::AV_MAX_VZ>) _param_av_max_vz
+		(ParamInt<px4::params::AV_GMB_YAW_INV>) _param_av_gmb_yaw_inv,
+		(ParamInt<px4::params::AV_GMB_PIT_INV>) _param_av_gmb_pit_inv,
+		(ParamInt<px4::params::AV_GMB_ROLL_INV>) _param_av_gmb_roll_inv,
+		(ParamFloat<px4::params::AV_MAX_VZ>) _param_av_max_vz,
+		(ParamInt<px4::params::AV_SIM_PIX_EN>) _param_av_sim_pix_en,
+		(ParamInt<px4::params::AV_SIM_PIX_X>) _param_av_sim_pix_x,
+		(ParamInt<px4::params::AV_SIM_PIX_Y>) _param_av_sim_pix_y,
+		(ParamInt<px4::params::AV_SIM_GMB_EN>) _param_av_sim_gmb_en,
+		(ParamInt<px4::params::AV_SIM_GMB_ROLL>) _param_av_sim_gmb_roll,
+		(ParamInt<px4::params::AV_SIM_GMB_PIT>) _param_av_sim_gmb_pit,
+		(ParamInt<px4::params::AV_SIM_GMB_YAW>) _param_av_sim_gmb_yaw
 	)
 };

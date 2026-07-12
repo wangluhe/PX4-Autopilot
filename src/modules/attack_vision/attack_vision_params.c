@@ -126,6 +126,19 @@ PARAM_DEFINE_FLOAT(AV_FOV_H, 70.4f);
 PARAM_DEFINE_FLOAT(AV_FOV_V, 39.6f);
 
 /**
+ * 像素X方向符号转换
+ *
+ * 1: 脱靶量X按左正右负输出，转换到FRD右向为正时取反
+ * 0: 脱靶量X按右正左负输出，转换到FRD时不取反
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_PIX_X_INV, 1);
+
+/**
  * 像素Y方向符号转换
  *
  * 1: 脱靶量Y按笛卡尔坐标向上为正，转换到FRD坐标时取反
@@ -136,7 +149,46 @@ PARAM_DEFINE_FLOAT(AV_FOV_V, 39.6f);
  * @max 1
  * @reboot_required false
  */
-PARAM_DEFINE_INT32(AV_PIX_Y_INV, 1);
+PARAM_DEFINE_INT32(AV_PIX_Y_INV, 0);
+
+/**
+ * 吊舱Yaw方向符号转换
+ *
+ * 1: 吊舱Yaw输出与PX4 FRD yaw定义相反，使用前取反
+ * 0: 吊舱Yaw输出与PX4 FRD yaw定义一致
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_GMB_YAW_INV, 0);
+
+/**
+ * 吊舱Pitch方向符号转换
+ *
+ * 1: 吊舱Pitch输出与PX4 FRD pitch定义相反，使用前取反
+ * 0: 吊舱Pitch输出与PX4 FRD pitch定义一致
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_GMB_PIT_INV, 0);
+
+/**
+ * 吊舱Roll方向符号转换
+ *
+ * 1: 吊舱Roll输出与PX4 FRD roll定义相反，使用前取反
+ * 0: 吊舱Roll输出与PX4 FRD roll定义一致
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_GMB_ROLL_INV, 1);
 
 /**
  * 末制导垂向速度限幅，NED坐标下向下为正
@@ -146,6 +198,84 @@ PARAM_DEFINE_INT32(AV_PIX_Y_INV, 1);
  * @reboot_required false
  */
 PARAM_DEFINE_FLOAT(AV_MAX_VZ, 0.8f);
+
+/**
+ * 仿真像素脱靶量注入使能
+ *
+ * 仅在SITL/POSIX仿真中生效。开启后，使用AV_SIM_PIX_X/Y覆盖仿真吊舱帧中的像素脱靶量。
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_PIX_EN, 0);
+
+/**
+ * 仿真注入像素X脱靶量
+ *
+ * 仅在AV_SIM_PIX_EN=1且SITL/POSIX仿真中生效。
+ *
+ * @group Attack Vision
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_PIX_X, 0);
+
+/**
+ * 仿真注入像素Y脱靶量
+ *
+ * 仅在AV_SIM_PIX_EN=1且SITL/POSIX仿真中生效。
+ *
+ * @group Attack Vision
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_PIX_Y, 0);
+
+/**
+ * 仿真吊舱姿态注入使能
+ *
+ * 仅在SITL/POSIX仿真中生效。开启后，使用AV_SIM_GMB_*作为相对机体FRD的吊舱姿态，
+ * 并让NED目标视线走与实机一致的机体姿态叠加链路。
+ *
+ * @group Attack Vision
+ * @min 0
+ * @max 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_GMB_EN, 0);
+
+/**
+ * 仿真注入吊舱Roll角
+ *
+ * 单位为deg*100，注入的是吊舱原始输出，之后仍会经过AV_GMB_ROLL_INV符号转换。
+ * 仅在AV_SIM_GMB_EN=1且SITL/POSIX仿真中生效。
+ *
+ * @group Attack Vision
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_GMB_ROLL, 0);
+
+/**
+ * 仿真注入吊舱Pitch角
+ *
+ * 单位为deg*100，注入的是吊舱原始输出，之后仍会经过AV_GMB_PIT_INV符号转换。
+ * 仅在AV_SIM_GMB_EN=1且SITL/POSIX仿真中生效。
+ *
+ * @group Attack Vision
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_GMB_PIT, 0);
+
+/**
+ * 仿真注入吊舱Yaw角
+ *
+ * 单位为deg*100，注入的是吊舱原始输出，之后仍会经过AV_GMB_YAW_INV符号转换。
+ * 仅在AV_SIM_GMB_EN=1且SITL/POSIX仿真中生效。
+ *
+ * @group Attack Vision
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_SIM_GMB_YAW, 0);
 
 /**
  * 外部任务协同模式
