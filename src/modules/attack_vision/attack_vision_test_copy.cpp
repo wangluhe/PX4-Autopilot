@@ -165,9 +165,9 @@ int AttackVision::print_usage(const char *reason)
 
 		- AAATTKVIS_EN: 模块使能开关（0=禁用，1=启用）
 		- AV_BAUD: 串口波特率（默认115200）
-		- AV_KP: 速度控制增益（m/s每像素，默认0.001）
-		- AV_DEAD: 像素死区阈值（默认5像素）
-		- AV_MAX_V: 最大速度限制（m/s，默认1.0）
+		- AV_FORWARD_V: 当前LOS制导前向接近速度限制
+		- AV_MAX_VZ: 当前LOS制导垂向速度限制
+		- AV_KP/AV_DEAD/AV_MAX_V: 旧像素控制参数，当前制导链路保留兼容
 
 		)DESCR_STR");
 

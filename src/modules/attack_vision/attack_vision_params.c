@@ -27,7 +27,10 @@ PARAM_DEFINE_INT32(AAATTKVIS_EN, 1);
 PARAM_DEFINE_INT32(AV_BAUD, 115200);
 
 /**
- * Velocity control gain (m/s per pixel)
+ * Legacy pixel-control gain (m/s per pixel).
+ *
+ * The current LOS guidance path keeps this parameter for compatibility, but
+ * does not use it for the active velocity setpoint calculation.
  *
  * @group Attack Vision
  * @reboot_required false
@@ -35,7 +38,10 @@ PARAM_DEFINE_INT32(AV_BAUD, 115200);
 PARAM_DEFINE_FLOAT(AV_KP, 0.001f);
 
 /**
- * Pixel deadzone threshold
+ * Legacy pixel deadzone threshold.
+ *
+ * The current LOS guidance path keeps this parameter for compatibility, but
+ * does not use it for the active velocity setpoint calculation.
  *
  * @group Attack Vision
  * @reboot_required false
@@ -43,7 +49,10 @@ PARAM_DEFINE_FLOAT(AV_KP, 0.001f);
 PARAM_DEFINE_FLOAT(AV_DEAD, 5.0f);
 
 /**
- * Maximum velocity limit (m/s)
+ * Legacy pixel-control maximum velocity limit.
+ *
+ * The current LOS guidance path keeps this parameter for compatibility. Use
+ * AV_FORWARD_V and AV_MAX_VZ for the active velocity limits.
  *
  * @group Attack Vision
  * @reboot_required false
@@ -151,4 +160,3 @@ PARAM_DEFINE_FLOAT(AV_MAX_VZ, 0.8f);
  * @reboot_required false
  */
 PARAM_DEFINE_INT32(AV_EXT_MODE, 1);
-

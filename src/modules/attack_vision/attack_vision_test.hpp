@@ -8,7 +8,7 @@
  * - 当锁定有效时，自动切换到Offboard模式并发布速度控制指令
  * - 失锁或超时时，自动切换回悬停模式
  *
- * 硬件连接：吊舱串口连接飞控TELEM2口（/dev/ttyS2）
+ * 硬件连接：吊舱串口连接飞控TELEM2口（/dev/ttyS5）
  */
 
 #pragma once
@@ -95,7 +95,7 @@ private:
 	// ========== 串口通信相关 ==========
 	int _fd{-1};  ///< 串口文件描述符
 	bool configure_uart(int baudrate);  ///< 配置串口参数（波特率等）
-	bool open_uart();  ///< 打开串口设备（默认/dev/ttyS2，TELEM2）
+	bool open_uart();  ///< 打开串口设备（TELEM2，实机/dev/ttyS5）
 
 	// ========== 帧解析相关 ==========
 	static constexpr int FRAME_LEN{64};  ///< 吊舱反馈帧固定长度：64字节
@@ -105,6 +105,7 @@ private:
 	uint8_t _buf[FRAME_LEN]{};  ///< 接收缓冲区
 	int _buf_len{0};  ///< 当前缓冲区数据长度
 	uint64_t _last_frame_time_us{0};  ///< 最后一次有效帧的时间戳（用于超时检测）
+	static constexpr uint64_t FRAME_TIMEOUT_US = 200000;  ///< 200ms无有效帧视为失效
 	bool try_read_frame();  ///< 尝试从串口读取一帧数据
 	bool validate_frame(const uint8_t *frame);  ///< 校验帧格式（帧头、帧尾、异或校验）
 
@@ -238,12 +239,12 @@ private:
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::AAATTKVIS_EN>) _param_av_en,      ///< 模块使能开关（0=禁用，1=启用）
 		(ParamInt<px4::params::AV_BAUD>) _param_av_baud,  ///< 串口波特率（默认115200）
-		(ParamFloat<px4::params::AV_KP>) _param_av_kp,    ///< 速度控制增益（m/s每像素，默认0.001）
-		(ParamFloat<px4::params::AV_DEAD>) _param_av_dead,  ///< 像素死区（默认5像素）
-		(ParamFloat<px4::params::AV_MAX_V>) _param_av_max_v,  ///< 最大速度限制（m/s，默认1.0）
+		(ParamFloat<px4::params::AV_KP>) _param_av_kp,    ///< 旧像素控制参数，当前制导链路保留兼容
+		(ParamFloat<px4::params::AV_DEAD>) _param_av_dead,  ///< 旧像素控制参数，当前制导链路保留兼容
+		(ParamFloat<px4::params::AV_MAX_V>) _param_av_max_v,  ///< 旧像素控制参数，当前制导链路保留兼容
 		(ParamFloat<px4::params::AV_ATT_KP>) _param_av_att_kp,  // 姿态控制增益（新增复用）
 		(ParamFloat<px4::params::AV_APPROACH_V>) _param_av_approach_v,  // 最大接近速度
-		(ParamInt<px4::params::AV_STRATEGY>) _param_av_strategy,  // 控制策略（1=姿态控制）
+		(ParamInt<px4::params::AV_STRATEGY>) _param_av_strategy,  // 旧策略选择参数，当前制导链路保留兼容
 		(ParamFloat<px4::params::AV_FORWARD_V>) _param_av_forward_v,
 		(ParamInt<px4::params::AV_EXT_MODE>) _param_av_ext_mode,
 		(ParamInt<px4::params::AV_CAM_W>) _param_av_cam_w,
