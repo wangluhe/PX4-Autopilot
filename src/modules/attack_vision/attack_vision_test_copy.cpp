@@ -43,6 +43,8 @@ AttackVision::AttackVision()
 	: ModuleParams(nullptr)
 	, WorkItem(MODULE_NAME, px4::wq_configurations::ttyS5)
 {
+	updateParams();
+
 	// 根据编译环境显示不同的串口信息
 	#ifdef __PX4_POSIX
 		PX4_INFO("Using virtual serial port for SITL simulation");
@@ -167,6 +169,8 @@ int AttackVision::print_usage(const char *reason)
 		- AV_BAUD: 串口波特率（默认115200）
 		- AV_FORWARD_V: 当前LOS制导前向接近速度限制
 		- AV_MAX_VZ: 当前LOS制导垂向速度限制
+		- AV_PIX_X_INV/AV_PIX_Y_INV: 像素脱靶量到相机FRD坐标的符号转换
+		- AV_GMB_YAW_INV/AV_GMB_PIT_INV/AV_GMB_ROLL_INV: 吊舱姿态角到PX4 FRD坐标的符号转换
 		- AV_KP/AV_DEAD/AV_MAX_V: 旧像素控制参数，当前制导链路保留兼容
 
 		)DESCR_STR");
@@ -526,9 +530,12 @@ void AttackVision::parse_frame_data()
 	pitch_deg_100 = (int16_t)((uint16_t)_buf[11] | ((uint16_t)_buf[12] << 8));
 	yaw_deg_100 = (int16_t)((uint16_t)_buf[9] | ((uint16_t)_buf[10] << 8));
 	// 转换为弧度（PX4姿态控制单位）
-	_gimbal_roll = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
-	_gimbal_pitch = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
-	_gimbal_yaw = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
+	const float roll_rad = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
+	const float pitch_rad = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
+	const float yaw_rad = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
+	_gimbal_roll = (_param_av_gmb_roll_inv.get() != 0) ? -roll_rad : roll_rad;
+	_gimbal_pitch = (_param_av_gmb_pit_inv.get() != 0) ? -pitch_rad : pitch_rad;
+	_gimbal_yaw = (_param_av_gmb_yaw_inv.get() != 0) ? -yaw_rad : yaw_rad;
 
 	// 打印吊舱姿态（调试用）
 	// PX4_INFO("吊舱姿态: 横滚=%.2f° (%.3frad), 俯仰=%.2f° (%.3frad), 方位=%.2f° (%.3frad)",
@@ -744,6 +751,10 @@ void AttackVision::reset_guidance_state()
 	_pix_offset_y = 0;
 	_buf_len = 0;
 	_last_frame_time_us = 0;
+	_last_los_gimbal.zero();
+	_last_target_vec_ned.zero();
+	_last_los_gimbal_valid = false;
+	_last_target_vec_ned_valid = false;
 }
 
 void AttackVision::update_external_mission_state(uint64_t now_us)
@@ -1024,24 +1035,27 @@ bool AttackVision::read_vehicle_guidance_state(VehicleGuidanceState &state)
 bool AttackVision::get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNedPose &pose)
 {
 	#ifdef __PX4_POSIX
+	if (_param_av_sim_gmb_en.get() == 0) {
 		pose.gimbal_roll_ned = _fixed_gimbal_roll_ned;
 		pose.gimbal_pitch_ned = _fixed_gimbal_pitch_ned;
 		pose.gimbal_yaw_ned = _fixed_gimbal_yaw_ned;
 		pose.q_gimbal_ned = matrix::Quatf(matrix::Eulerf(pose.gimbal_roll_ned, pose.gimbal_pitch_ned, pose.gimbal_yaw_ned));
-	#else
-		// 吊舱旋转顺序保持不变：俯仰(pitch，Y轴) → 滚转(roll，X轴) → 偏航(yaw，Z轴)
-		matrix::Quatf q_pitch(matrix::Eulerf(0, _gimbal_pitch, 0));
-		matrix::Quatf q_roll(matrix::Eulerf(_gimbal_roll, 0, 0));
-		matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
-		matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
-		pose.q_gimbal_ned = q_veh_ned * q_gimbal_body;
-
-		matrix::Eulerf euler_gimbal_ned(pose.q_gimbal_ned);
-		pose.gimbal_roll_ned = euler_gimbal_ned.phi();
-		pose.gimbal_pitch_ned = euler_gimbal_ned.theta();
-		pose.gimbal_yaw_ned = euler_gimbal_ned.psi();
+		pose.valid = true;
+		return true;
+	}
 	#endif
 
+	// 吊舱旋转顺序保持不变：俯仰(pitch，Y轴) → 滚转(roll，X轴) → 偏航(yaw，Z轴)
+	matrix::Quatf q_pitch(matrix::Eulerf(0, _gimbal_pitch, 0));
+	matrix::Quatf q_roll(matrix::Eulerf(_gimbal_roll, 0, 0));
+	matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
+	matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
+	pose.q_gimbal_ned = q_veh_ned * q_gimbal_body;
+
+	matrix::Eulerf euler_gimbal_ned(pose.q_gimbal_ned);
+	pose.gimbal_roll_ned = euler_gimbal_ned.phi();
+	pose.gimbal_pitch_ned = euler_gimbal_ned.theta();
+	pose.gimbal_yaw_ned = euler_gimbal_ned.psi();
 	pose.valid = true;
 	return true;
 }
@@ -1084,6 +1098,8 @@ bool AttackVision::build_target_los_gimbal(
 	const CameraModel &camera,
 	matrix::Vector3f &los_gimbal)
 {
+	_last_los_gimbal_valid = false;
+
 	if (!target.valid || !camera.valid) {
 		return false;
 	}
@@ -1100,8 +1116,9 @@ bool AttackVision::build_target_los_gimbal(
 	const float pix_y = math::constrain(static_cast<float>(target.pix_offset_y), -half_h, half_h);
 
 	// 针孔模型：像素偏差 -> 归一化相机平面偏差；吊舱/机体坐标均为FRD（前右下）。
-	const float right_tan = (pix_x / half_w) * tanf(camera.fov_h_rad * 0.5f);
+	const float x_tan = (pix_x / half_w) * tanf(camera.fov_h_rad * 0.5f);
 	const float y_tan = (pix_y / half_h) * tanf(camera.fov_v_rad * 0.5f);
+	const float right_tan = (_param_av_pix_x_inv.get() != 0) ? -x_tan : x_tan;
 	const float down_tan = camera.pixel_y_positive_up ? -y_tan : y_tan;
 
 	los_gimbal = matrix::Vector3f(1.0f, right_tan, down_tan);
@@ -1111,6 +1128,8 @@ bool AttackVision::build_target_los_gimbal(
 	}
 
 	los_gimbal.normalize();
+	_last_los_gimbal = los_gimbal;
+	_last_los_gimbal_valid = true;
 	return true;
 }
 
@@ -1122,6 +1141,7 @@ bool AttackVision::build_guidance_command(
 	GuidanceCommand &cmd)
 {
 	if (!veh.valid || !gimbal.valid || !target.valid || !camera.valid) {
+		_last_target_vec_ned_valid = false;
 		return false;
 	}
 
@@ -1130,16 +1150,20 @@ bool AttackVision::build_guidance_command(
 
 	matrix::Vector3f los_gimbal{};
 	if (!build_target_los_gimbal(target, camera, los_gimbal)) {
+		_last_target_vec_ned_valid = false;
 		return false;
 	}
 
 	// 将“吊舱姿态 + 像素修正”后的目标视线转到NED，速度始终沿真实目标视线飞。
 	matrix::Vector3f target_vec_ned = gimbal.q_gimbal_ned.rotateVector(los_gimbal);
 	if (target_vec_ned.norm() <= 1e-3f) {
+		_last_target_vec_ned_valid = false;
 		return false;
 	}
 
 	target_vec_ned.normalize();
+	_last_target_vec_ned = target_vec_ned;
+	_last_target_vec_ned_valid = true;
 
 	cmd.vx_ned = target_vec_ned(0) * max_forward_v;
 	cmd.vy_ned = target_vec_ned(1) * max_forward_v;
@@ -1386,6 +1410,12 @@ void AttackVision::Run()
 	while (!should_exit()) {
 		const uint64_t now = hrt_absolute_time();
 
+		if (_parameter_update_sub.updated()) {
+			parameter_update_s param_update{};
+			_parameter_update_sub.copy(&param_update);
+			updateParams();
+		}
+
 		// 1) 更新 RC 模式。仿真保留原差异：不依赖实体遥控器，直接视为 Offboard 授权档。
 		#ifdef __PX4_POSIX
 			_current_rc_mode = RCMode::MODE_OFFBOARD;
@@ -1409,6 +1439,26 @@ void AttackVision::Run()
 			// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
 			last_frame_log_time = now;
 		}
+
+		#ifdef __PX4_POSIX
+			if (_param_av_sim_pix_en.get() != 0) {
+				_pix_offset_x = static_cast<int16_t>(math::constrain(_param_av_sim_pix_x.get(), -32768, 32767));
+				_pix_offset_y = static_cast<int16_t>(math::constrain(_param_av_sim_pix_y.get(), -32768, 32767));
+			}
+
+			if (_param_av_sim_gmb_en.get() != 0) {
+				roll_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_roll.get(), -32768, 32767));
+				pitch_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_pit.get(), -32768, 32767));
+				yaw_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_yaw.get(), -32768, 32767));
+
+				const float roll_rad = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
+				const float pitch_rad = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
+				const float yaw_rad = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
+				_gimbal_roll = (_param_av_gmb_roll_inv.get() != 0) ? -roll_rad : roll_rad;
+				_gimbal_pitch = (_param_av_gmb_pit_inv.get() != 0) ? -pitch_rad : pitch_rad;
+				_gimbal_yaw = (_param_av_gmb_yaw_inv.get() != 0) ? -yaw_rad : yaw_rad;
+			}
+		#endif
 
 		// 4) 更新飞控状态和统一接管判定。
 		vehicle_status_s vehicle_status{};
@@ -1434,6 +1484,11 @@ void AttackVision::Run()
 		_allow_takeover = !_guidance_paused && rc_offboard && !_external_mission_active && _lock_active;
 		const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
 
+		if (!frame_valid_recent || !_lock_active) {
+			_last_los_gimbal_valid = false;
+			_last_target_vec_ned_valid = false;
+		}
+
 		if (_guidance_paused && vehicle_in_offboard && !_external_mission_active) {
 			publish_position_offboard_heartbeat();
 		}
@@ -1446,6 +1501,20 @@ void AttackVision::Run()
 		status.frame_valid = frame_valid_recent;
 		status.pix_offset_x = _pix_offset_x;
 		status.pix_offset_y = _pix_offset_y;
+		status.gimbal_roll_raw_deg100 = roll_deg_100;
+		status.gimbal_pitch_raw_deg100 = pitch_deg_100;
+		status.gimbal_yaw_raw_deg100 = yaw_deg_100;
+		status.gimbal_roll_rad = _gimbal_roll;
+		status.gimbal_pitch_rad = _gimbal_pitch;
+		status.gimbal_yaw_rad = _gimbal_yaw;
+		status.los_gimbal_valid = _last_los_gimbal_valid;
+		status.los_gimbal_x = _last_los_gimbal(0);
+		status.los_gimbal_y = _last_los_gimbal(1);
+		status.los_gimbal_z = _last_los_gimbal(2);
+		status.target_vec_ned_valid = _last_target_vec_ned_valid;
+		status.target_vec_ned_x = _last_target_vec_ned(0);
+		status.target_vec_ned_y = _last_target_vec_ned(1);
+		status.target_vec_ned_z = _last_target_vec_ned(2);
 		const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (frame_age_us / 1000) : UINT32_MAX;
 		status.frame_age_ms = (frame_age_ms > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(frame_age_ms);
 		status.module_state = static_cast<uint8_t>(_module_state);
