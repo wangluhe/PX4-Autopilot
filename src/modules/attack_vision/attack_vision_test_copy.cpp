@@ -188,7 +188,8 @@ int AttackVision::print_usage(const char *reason)
 int AttackVision::print_status()
 {
 	uint64_t now_us = hrt_absolute_time();
-	uint64_t time_since_last_frame = now_us - _last_frame_time_us;
+	const uint64_t time_since_last_frame = (_last_frame_time_us > 0) ?
+		((now_us >= _last_frame_time_us) ? (now_us - _last_frame_time_us) : 0) : UINT64_MAX;
 	const bool frame_valid_recent = (_last_frame_time_us > 0) && (time_since_last_frame < FRAME_TIMEOUT_US);
 	const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (time_since_last_frame / 1000) : UINT32_MAX;
 
@@ -1408,7 +1409,7 @@ void AttackVision::Run()
 	static uint64_t last_drone_status_time = 0;
 
 	while (!should_exit()) {
-		const uint64_t now = hrt_absolute_time();
+		uint64_t now = hrt_absolute_time();
 
 		if (_parameter_update_sub.updated()) {
 			parameter_update_s param_update{};
@@ -1460,10 +1461,15 @@ void AttackVision::Run()
 			}
 		#endif
 
+		// try_read_frame() can update _last_frame_time_us after this loop's initial timestamp.
+		// Refresh now before computing frame age to avoid unsigned underflow.
+		now = hrt_absolute_time();
+
 		// 4) 更新飞控状态和统一接管判定。
 		vehicle_status_s vehicle_status{};
 		const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
-		const uint64_t frame_age_us = (_last_frame_time_us > 0) ? (now - _last_frame_time_us) : UINT64_MAX;
+		const uint64_t frame_age_us = (_last_frame_time_us > 0) ?
+			((now >= _last_frame_time_us) ? (now - _last_frame_time_us) : 0) : UINT64_MAX;
 		const bool frame_valid_recent = (_last_frame_time_us > 0) && (frame_age_us < FRAME_TIMEOUT_US);
 		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
