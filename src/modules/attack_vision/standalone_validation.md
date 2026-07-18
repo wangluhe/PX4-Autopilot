@@ -412,7 +412,7 @@ param set AV_GMB_PIT_INV 0
 param set AV_GMB_ROLL_INV 1
 
 param set AV_FORWARD_V 1
-param set AV_MAX_VZ 0.5
+param set AV_MAX_VZ 0.2
 ```
 
 确认仿真注入关闭。实机中这些参数不会覆盖真实吊舱帧，但建议保持关闭，避免混淆记录：

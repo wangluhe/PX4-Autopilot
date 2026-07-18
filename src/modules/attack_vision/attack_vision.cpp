@@ -17,7 +17,7 @@
 
 // 图像末制导，进入后无遥控器接管。
 // 需要优化
-#include "attack_vision_test.hpp"
+#include "attack_vision.hpp"
 
 #include <px4_platform_common/getopt.h>
 #include <px4_platform_common/log.h>
@@ -29,6 +29,8 @@
 #include <errno.h>
 #include <px4_platform_common/cli.h>
 #include "vserial.h"  // 添加虚拟串口头文件
+#include "attack_vision_protocol.hpp"
+#include "attack_vision_guidance.hpp"
 #include <commander/px4_custom_mode.h>
 
 /**
@@ -336,14 +338,7 @@ bool AttackVision::open_uart()
  */
 bool AttackVision::validate_frame(const uint8_t *frame)
 {
-	if (!frame) return false;
-	if (frame[0] != FRAME_HEAD_0 || frame[1] != FRAME_HEAD_1) return false;
-	if (frame[63] != FRAME_TAIL) return false;
-
-	// 异或校验：第3~62字节（索引2~61）异或，结果应等于第63字节（索引62）
-	uint8_t xorv = 0;
-	for (int i = 2; i <= 61; i++) { xorv ^= frame[i]; }
-	return xorv == frame[62];
+	return attack_vision_protocol::validate_frame(frame);
 }
 
 /**
@@ -459,84 +454,24 @@ void AttackVision::parse_frame_data()
 		debug_frame_count++;
 	}
 
-	// ========== 解析关键字段 ==========
-	// 第5-6字节：吊舱状态（UINT16，小端序）
-	uint16_t status_5_6 = (uint16_t)_buf[4] | ((uint16_t)_buf[5] << 8);
-	// 第9字节：伺服状态
-	uint8_t servo_state = _buf[8];
+	attack_vision_protocol::ParsedFrameData parsed{};
+	if (!attack_vision_protocol::parse_frame(_buf,
+			_param_av_gmb_roll_inv.get() != 0,
+			_param_av_gmb_pit_inv.get() != 0,
+			_param_av_gmb_yaw_inv.get() != 0,
+			parsed)) {
+		return;
+	}
 
-	// 特别注意Bit9和Bit10（协议中的锁定状态位）
-	bool bit9 = (status_5_6 & (1 << 9)) != 0;
-	bool bit10 = (status_5_6 & (1 << 10)) != 0;
-
-	// 根据协议第14页，Bit9~Bit10表示目标锁定标识位：
-	// 00: 默认（无效）
-	// 01: 锁定中
-	// 10: 锁定预测
-	// 11: 退出锁定
-	int lock_state = ((bit10 ? 1 : 0) << 1) | (bit9 ? 1 : 0);
-	// const char* lock_state_str = "";
-	// switch (lock_state) {
-	// 	case 0: lock_state_str = "00-默认(无效)"; break;
-	// 	case 1: lock_state_str = "01-锁定中"; break;
-	// 	case 2: lock_state_str = "10-锁定预测"; break;
-	// 	case 3: lock_state_str = "11-退出锁定"; break;
-	// }
-	// PX4_INFO("锁定标识: %s", lock_state_str);
-
-	// 锁定有效条件：锁定标识位为01（锁定中）且伺服状态为跟踪模式（0x07）
-	// bool locking = (lock_state == 1);  // 01状态表示锁定中
-	bool locking = (lock_state == 1) || (lock_state == 2);  // 01(锁定中) 或 10(锁定预测)
-
-	// 调试输出伺服状态
-	// const char* servo_state_str = "";
-	// switch (servo_state) {
-	// 	case 0x01: servo_state_str = "载荷关"; break;
-	// 	case 0x02: servo_state_str = "手动"; break;
-	// 	case 0x03: servo_state_str = "收藏"; break;
-	// 	case 0x04: servo_state_str = "数引"; break;
-	// 	case 0x05: servo_state_str = "航向锁定"; break;
-	// 	case 0x06: servo_state_str = "扫描"; break;
-	// 	case 0x07: servo_state_str = "跟踪"; break;
-	// 	case 0x08: servo_state_str = "垂直下视"; break;
-	// 	case 0x09: servo_state_str = "陀螺自动较漂"; break;
-	// 	case 0x0A: servo_state_str = "陀螺温度较漂"; break;
-	// 	case 0x0B: servo_state_str = "航向随动"; break;
-	// 	case 0x0C: servo_state_str = "归中"; break;
-	// 	case 0x0D: servo_state_str = "手动陀螺较漂"; break;
-	// 	case 0x0E: servo_state_str = "姿态指引"; break;
-	// 	default: servo_state_str = "未知"; break;
-	// }
-	// PX4_INFO("伺服状态: 0x%02X (%s)", servo_state, servo_state_str);
-
-	_lock_active = locking && (servo_state == 0x07);
-
-	// ========== 原脱靶量解析（保留，兼容扩展） ==========
-
-	// 第59-60字节：目标脱靶量-方位方向（INT16，小端序，单位：像素）
-	_pix_offset_x = (int16_t)((uint16_t)_buf[58] | ((uint16_t)_buf[59] << 8));
-	// 第61-62字节：目标脱靶量-俯仰方向（INT16，小端序，单位：像素）
-	_pix_offset_y = (int16_t)((uint16_t)_buf[60] | ((uint16_t)_buf[61] << 8));
-	// 调试输出脱靶量
-	// PX4_INFO("[58]=0x%02X, [59]=0x%02X, [60]=0x%02X, [61]=0x%02X",
-	// 	_buf[58], _buf[59], _buf[60], _buf[61]);
-	// PX4_INFO("=========================================");
-
-	// ========== 新增：解析吊舱姿态角（关键修改） ==========
-	// 假设字节位置（需根据实际协议调整！）：
-	// 字节10-11：方位角（INT16，0.01°/LSB，小端序）
-	// 字节12-13：俯仰角（INT16，0.01°/LSB，小端序）
-	// 字节14-15：滚转角（INT16，0.01°/LSB，小端序）
-	roll_deg_100 = (int16_t)((uint16_t)_buf[13] | ((uint16_t)_buf[14] << 8));
-	pitch_deg_100 = (int16_t)((uint16_t)_buf[11] | ((uint16_t)_buf[12] << 8));
-	yaw_deg_100 = (int16_t)((uint16_t)_buf[9] | ((uint16_t)_buf[10] << 8));
-	// 转换为弧度（PX4姿态控制单位）
-	const float roll_rad = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
-	const float pitch_rad = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
-	const float yaw_rad = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
-	_gimbal_roll = (_param_av_gmb_roll_inv.get() != 0) ? -roll_rad : roll_rad;
-	_gimbal_pitch = (_param_av_gmb_pit_inv.get() != 0) ? -pitch_rad : pitch_rad;
-	_gimbal_yaw = (_param_av_gmb_yaw_inv.get() != 0) ? -yaw_rad : yaw_rad;
+	_lock_active = parsed.lock_active;
+	_pix_offset_x = parsed.pix_offset_x;
+	_pix_offset_y = parsed.pix_offset_y;
+	roll_deg_100 = parsed.roll_deg_100;
+	pitch_deg_100 = parsed.pitch_deg_100;
+	yaw_deg_100 = parsed.yaw_deg_100;
+	_gimbal_roll = parsed.gimbal_roll_rad;
+	_gimbal_pitch = parsed.gimbal_pitch_rad;
+	_gimbal_yaw = parsed.gimbal_yaw_rad;
 
 	// 打印吊舱姿态（调试用）
 	// PX4_INFO("吊舱姿态: 横滚=%.2f° (%.3frad), 俯仰=%.2f° (%.3frad), 方位=%.2f° (%.3frad)",
@@ -1046,52 +981,21 @@ bool AttackVision::get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNed
 	}
 	#endif
 
-	// 吊舱旋转顺序保持不变：俯仰(pitch，Y轴) → 滚转(roll，X轴) → 偏航(yaw，Z轴)
-	matrix::Quatf q_pitch(matrix::Eulerf(0, _gimbal_pitch, 0));
-	matrix::Quatf q_roll(matrix::Eulerf(_gimbal_roll, 0, 0));
-	matrix::Quatf q_yaw(matrix::Eulerf(0, 0, _gimbal_yaw));
-	matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
-	pose.q_gimbal_ned = q_veh_ned * q_gimbal_body;
-
-	matrix::Eulerf euler_gimbal_ned(pose.q_gimbal_ned);
-	pose.gimbal_roll_ned = euler_gimbal_ned.phi();
-	pose.gimbal_pitch_ned = euler_gimbal_ned.theta();
-	pose.gimbal_yaw_ned = euler_gimbal_ned.psi();
-	pose.valid = true;
-	return true;
+	return attack_vision_guidance::compose_gimbal_ned_pose(q_veh_ned, _gimbal_roll,
+			_gimbal_pitch, _gimbal_yaw, pose);
 }
 
 bool AttackVision::build_vision_target(VisionTarget &target)
 {
-	// 只封装当前帧的像素脱靶量；以后可在这里加入锁定质量、目标框大小等视觉量。
-	target.pix_offset_x = _pix_offset_x;
-	target.pix_offset_y = _pix_offset_y;
-	target.valid = _lock_active;
-	return target.valid;
+	return attack_vision_guidance::build_vision_target(_pix_offset_x, _pix_offset_y,
+			_lock_active, target);
 }
 
 bool AttackVision::build_camera_model(CameraModel &camera)
 {
-	const int cam_w = _param_av_cam_w.get();
-	const int cam_h = _param_av_cam_h.get();
-	const float fov_h_deg = _param_av_fov_h.get();
-	const float fov_v_deg = _param_av_fov_v.get();
-
-	if (cam_w <= 0 || cam_h <= 0 ||
-		!PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
-		fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
-		fov_v_deg <= 0.0f || fov_v_deg >= 179.0f) {
-		return false;
-	}
-
-	// 默认参数来自CGTD055宽视场1080P；变倍后可通过参数切换到窄视场。
-	camera.width_px = static_cast<float>(cam_w);
-	camera.height_px = static_cast<float>(cam_h);
-	camera.fov_h_rad = fov_h_deg * M_PI_F / 180.0f;
-	camera.fov_v_rad = fov_v_deg * M_PI_F / 180.0f;
-	camera.pixel_y_positive_up = (_param_av_pix_y_inv.get() != 0);
-	camera.valid = true;
-	return true;
+	return attack_vision_guidance::build_camera_model(_param_av_cam_w.get(), _param_av_cam_h.get(),
+			_param_av_fov_h.get(), _param_av_fov_v.get(),
+			_param_av_pix_y_inv.get() != 0, camera);
 }
 
 bool AttackVision::build_target_los_gimbal(
@@ -1100,35 +1004,11 @@ bool AttackVision::build_target_los_gimbal(
 	matrix::Vector3f &los_gimbal)
 {
 	_last_los_gimbal_valid = false;
-
-	if (!target.valid || !camera.valid) {
+	if (!attack_vision_guidance::build_target_los_gimbal(target, camera,
+			_param_av_pix_x_inv.get() != 0, los_gimbal)) {
 		return false;
 	}
 
-	const float half_w = camera.width_px * 0.5f;
-	const float half_h = camera.height_px * 0.5f;
-
-	if (half_w <= 0.0f || half_h <= 0.0f) {
-		return false;
-	}
-
-	// 脱靶量按画面中心为0，限幅到半幅画面，避免异常帧把视线推到视场外。
-	const float pix_x = math::constrain(static_cast<float>(target.pix_offset_x), -half_w, half_w);
-	const float pix_y = math::constrain(static_cast<float>(target.pix_offset_y), -half_h, half_h);
-
-	// 针孔模型：像素偏差 -> 归一化相机平面偏差；吊舱/机体坐标均为FRD（前右下）。
-	const float x_tan = (pix_x / half_w) * tanf(camera.fov_h_rad * 0.5f);
-	const float y_tan = (pix_y / half_h) * tanf(camera.fov_v_rad * 0.5f);
-	const float right_tan = (_param_av_pix_x_inv.get() != 0) ? -x_tan : x_tan;
-	const float down_tan = camera.pixel_y_positive_up ? -y_tan : y_tan;
-
-	los_gimbal = matrix::Vector3f(1.0f, right_tan, down_tan);
-
-	if (los_gimbal.norm() <= 1e-3f) {
-		return false;
-	}
-
-	los_gimbal.normalize();
 	_last_los_gimbal = los_gimbal;
 	_last_los_gimbal_valid = true;
 	return true;
@@ -1146,16 +1026,12 @@ bool AttackVision::build_guidance_command(
 		return false;
 	}
 
-	const float max_forward_v = _param_av_forward_v.get();
-	const float max_vz = _param_av_max_vz.get();
-
 	matrix::Vector3f los_gimbal{};
 	if (!build_target_los_gimbal(target, camera, los_gimbal)) {
 		_last_target_vec_ned_valid = false;
 		return false;
 	}
 
-	// 将“吊舱姿态 + 像素修正”后的目标视线转到NED，速度始终沿真实目标视线飞。
 	matrix::Vector3f target_vec_ned = gimbal.q_gimbal_ned.rotateVector(los_gimbal);
 	if (target_vec_ned.norm() <= 1e-3f) {
 		_last_target_vec_ned_valid = false;
@@ -1166,17 +1042,8 @@ bool AttackVision::build_guidance_command(
 	_last_target_vec_ned = target_vec_ned;
 	_last_target_vec_ned_valid = true;
 
-	cmd.vx_ned = target_vec_ned(0) * max_forward_v;
-	cmd.vy_ned = target_vec_ned(1) * max_forward_v;
-	cmd.vz_ned = math::constrain(target_vec_ned(2) * max_forward_v, -max_vz, max_vz);
-
-	// 当前Offboard只启用velocity和yaw，roll/pitch不作为控制量；保留字段便于后续扩展。
-	cmd.target_roll = veh.veh_roll;
-	cmd.target_pitch = veh.veh_pitch;
-	cmd.target_yaw = matrix::wrap_pi(atan2f(target_vec_ned(1), target_vec_ned(0)));
-	cmd.target_yaw_rate = 0.0f;
-	cmd.valid = true;
-	return true;
+	return attack_vision_guidance::build_guidance_command(veh, target_vec_ned,
+			_param_av_forward_v.get(), _param_av_max_vz.get(), cmd);
 }
 
 void AttackVision::publish_guidance_command(const GuidanceCommand &cmd)

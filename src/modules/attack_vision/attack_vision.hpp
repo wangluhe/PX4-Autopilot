@@ -18,6 +18,8 @@
 #include <px4_platform_common/time.h>
 #include <px4_platform_common/px4_work_queue/WorkItem.hpp>
 #include <matrix/matrix/math.hpp>
+#include "attack_vision_protocol.hpp"
+#include "attack_vision_guidance.hpp"
 #include <uORB/uORB.h>
 #include <uORB/Publication.hpp>
 #include <uORB/PublicationMulti.hpp>
@@ -99,10 +101,10 @@ private:
 	bool open_uart();  ///< 打开串口设备（TELEM2，实机/dev/ttyS5）
 
 	// ========== 帧解析相关 ==========
-	static constexpr int FRAME_LEN{64};  ///< 吊舱反馈帧固定长度：64字节
-	static constexpr uint8_t FRAME_HEAD_0{0xFC};  ///< 帧头字节0
-	static constexpr uint8_t FRAME_HEAD_1{0x2C};  ///< 帧头字节1
-	static constexpr uint8_t FRAME_TAIL{0xF0};  ///< 帧尾字节
+	static constexpr int FRAME_LEN{attack_vision_protocol::FRAME_LEN};  ///< 吊舱反馈帧固定长度：64字节
+	static constexpr uint8_t FRAME_HEAD_0{attack_vision_protocol::FRAME_HEAD_0};  ///< 帧头字节0
+	static constexpr uint8_t FRAME_HEAD_1{attack_vision_protocol::FRAME_HEAD_1};  ///< 帧头字节1
+	static constexpr uint8_t FRAME_TAIL{attack_vision_protocol::FRAME_TAIL};  ///< 帧尾字节
 	uint8_t _buf[FRAME_LEN]{};  ///< 接收缓冲区
 	int _buf_len{0};  ///< 当前缓冲区数据长度
 	uint64_t _last_frame_time_us{0};  ///< 最后一次有效帧的时间戳（用于超时检测）
@@ -136,49 +138,6 @@ private:
 	ModuleState _module_state{ModuleState::HOLD};  ///< 当前模块状态
 
 	// ========== 控制逻辑相关 ==========
-	struct VehicleGuidanceState {
-		matrix::Quatf q_veh_ned{};
-		float veh_roll{0.0f};
-		float veh_pitch{0.0f};
-		float veh_yaw{0.0f};
-		bool valid{false};
-	};
-
-	struct GimbalNedPose {
-		matrix::Quatf q_gimbal_ned{};
-		float gimbal_roll_ned{0.0f};
-		float gimbal_pitch_ned{0.0f};
-		float gimbal_yaw_ned{0.0f};
-		bool valid{false};
-	};
-
-	// 视觉目标信息：脱靶量保留为像素，便于后续替换更高级的视觉制导模型。
-	struct VisionTarget {
-		int16_t pix_offset_x{0};
-		int16_t pix_offset_y{0};
-		bool valid{false};
-	};
-
-	// 相机模型：默认按宽视场1080P，像素脱靶量通过视场角转换为目标视线。
-	struct CameraModel {
-		float width_px{1920.0f};
-		float height_px{1080.0f};
-		float fov_h_rad{0.0f};
-		float fov_v_rad{0.0f};
-		bool pixel_y_positive_up{true};
-		bool valid{false};
-	};
-
-	struct GuidanceCommand {
-		float target_roll{0.0f};
-		float target_pitch{0.0f};
-		float target_yaw{0.0f};
-		float vx_ned{0.0f};
-		float vy_ned{0.0f};
-		float vz_ned{0.0f};
-		float target_yaw_rate{0.0f};
-		bool valid{false};
-	};
 
 	float _forward_velocity{1.0f};  ///< 恒定前向速度
 	hrt_abstime _switch_start_time{0};  ///< 模式切换开始时间戳
