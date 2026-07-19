@@ -149,7 +149,7 @@ private:
 	void handle_guidance();  ///< 处理制导逻辑：根据像素偏差计算速度指令
 	bool check_guidance_ready();
 	bool read_vehicle_guidance_state(VehicleGuidanceState &state);
-	bool get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNedPose &pose);
+	bool get_gimbal_ned_pose(float vehicle_yaw, GimbalNedPose &pose);
 	bool build_vision_target(VisionTarget &target);
 	bool build_camera_model(CameraModel &camera);
 	bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &camera, matrix::Vector3f &los_gimbal);
@@ -221,6 +221,7 @@ private:
 		(ParamInt<px4::params::AV_GMB_YAW_INV>) _param_av_gmb_yaw_inv,
 		(ParamInt<px4::params::AV_GMB_PIT_INV>) _param_av_gmb_pit_inv,
 		(ParamInt<px4::params::AV_GMB_ROLL_INV>) _param_av_gmb_roll_inv,
+		(ParamFloat<px4::params::AV_MNT_YAW>) _param_av_mnt_yaw,
 		(ParamFloat<px4::params::AV_MAX_VZ>) _param_av_max_vz,
 		(ParamInt<px4::params::AV_SIM_PIX_EN>) _param_av_sim_pix_en,
 		(ParamInt<px4::params::AV_SIM_PIX_X>) _param_av_sim_pix_x,

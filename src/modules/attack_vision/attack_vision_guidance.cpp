@@ -37,7 +37,7 @@ bool build_camera_model(int cam_w, int cam_h, float fov_h_deg, float fov_v_deg,
 }
 
 bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &camera,
-			bool pix_x_inv, matrix::Vector3f &los_gimbal)
+			bool pix_x_inv, float image_roll_rad, matrix::Vector3f &los_gimbal)
 {
 	if (!target.valid || !camera.valid) {
 		return false;
@@ -55,8 +55,12 @@ bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &came
 	const float y_tan = (pix_y / half_h) * tanf(camera.fov_v_rad * 0.5f);
 	const float right_tan = pix_x_inv ? -x_tan : x_tan;
 	const float down_tan = camera.pixel_y_positive_up ? -y_tan : y_tan;
+	const float cos_roll = cosf(image_roll_rad);
+	const float sin_roll = sinf(image_roll_rad);
+	const float right_corr = right_tan * cos_roll - down_tan * sin_roll;
+	const float down_corr = right_tan * sin_roll + down_tan * cos_roll;
 
-	los_gimbal = matrix::Vector3f(1.0f, right_tan, down_tan);
+	los_gimbal = matrix::Vector3f(1.0f, right_corr, down_corr);
 	if (los_gimbal.norm() <= 1e-3f) {
 		return false;
 	}
@@ -65,14 +69,22 @@ bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &came
 	return true;
 }
 
-bool compose_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, float gimbal_roll,
+bool compose_gimbal_ned_pose(float vehicle_yaw, float mount_yaw,
 			float gimbal_pitch, float gimbal_yaw, GimbalNedPose &pose)
 {
+	if (!PX4_ISFINITE(vehicle_yaw) || !PX4_ISFINITE(mount_yaw) ||
+		!PX4_ISFINITE(gimbal_pitch) || !PX4_ISFINITE(gimbal_yaw)) {
+		return false;
+	}
+
+	matrix::Quatf q_heading(matrix::Eulerf(0, 0, vehicle_yaw));
+	matrix::Quatf q_mount_yaw(matrix::Eulerf(0, 0, mount_yaw));
 	matrix::Quatf q_pitch(matrix::Eulerf(0, gimbal_pitch, 0));
-	matrix::Quatf q_roll(matrix::Eulerf(gimbal_roll, 0, 0));
 	matrix::Quatf q_yaw(matrix::Eulerf(0, 0, gimbal_yaw));
-	matrix::Quatf q_gimbal_body = q_yaw * q_roll * q_pitch;
-	pose.q_gimbal_ned = q_veh_ned * q_gimbal_body;
+	matrix::Quatf q_gimbal_g0 = q_yaw * q_pitch;
+
+	// G0 is heading-level: it follows vehicle yaw and mount yaw, but keeps roll/pitch level to NED.
+	pose.q_gimbal_ned = q_heading * q_mount_yaw * q_gimbal_g0;
 
 	matrix::Eulerf euler_gimbal_ned(pose.q_gimbal_ned);
 	pose.gimbal_roll_ned = euler_gimbal_ned.phi();

@@ -173,6 +173,7 @@ int AttackVision::print_usage(const char *reason)
 		- AV_MAX_VZ: 当前LOS制导垂向速度限制
 		- AV_PIX_X_INV/AV_PIX_Y_INV: 像素脱靶量到相机FRD坐标的符号转换
 		- AV_GMB_YAW_INV/AV_GMB_PIT_INV/AV_GMB_ROLL_INV: 吊舱姿态角到PX4 FRD坐标的符号转换
+		- AV_MNT_YAW: 吊舱机械yaw零位相对机头航向的安装偏差
 		- AV_KP/AV_DEAD/AV_MAX_V: 旧像素控制参数，当前制导链路保留兼容
 
 		)DESCR_STR");
@@ -902,7 +903,7 @@ void AttackVision::handle_guidance()
 	}
 
 	GimbalNedPose gimbal{};
-	if (!get_gimbal_ned_pose(veh.q_veh_ned, gimbal)) {
+	if (!get_gimbal_ned_pose(veh.veh_yaw, gimbal)) {
 		return;
 	}
 
@@ -934,16 +935,19 @@ bool AttackVision::check_guidance_ready()
 	const float max_vz = _param_av_max_vz.get();
 	const float fov_h_deg = _param_av_fov_h.get();
 	const float fov_v_deg = _param_av_fov_v.get();
+	const float mount_yaw_deg = _param_av_mnt_yaw.get();
 	const int cam_w = _param_av_cam_w.get();
 	const int cam_h = _param_av_cam_h.get();
 
 	// 制导算法依赖相机内参和速度限幅，参数异常时直接跳过本周期控制。
 	if (!PX4_ISFINITE(max_forward_v) || !PX4_ISFINITE(max_vz) ||
-	    !PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
-	    max_forward_v < 0.0f || max_vz < 0.0f ||
-	    fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
-	    fov_v_deg <= 0.0f || fov_v_deg >= 179.0f ||
-	    cam_w <= 0 || cam_h <= 0) {
+		!PX4_ISFINITE(mount_yaw_deg) ||
+		!PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
+		max_forward_v < 0.0f || max_vz < 0.0f ||
+		mount_yaw_deg < -180.0f || mount_yaw_deg > 180.0f ||
+		fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
+		fov_v_deg <= 0.0f || fov_v_deg >= 179.0f ||
+		cam_w <= 0 || cam_h <= 0) {
 		PX4_ERR("guidance params invalid");
 		return false;
 	}
@@ -968,7 +972,7 @@ bool AttackVision::read_vehicle_guidance_state(VehicleGuidanceState &state)
 	return true;
 }
 
-bool AttackVision::get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNedPose &pose)
+bool AttackVision::get_gimbal_ned_pose(float vehicle_yaw, GimbalNedPose &pose)
 {
 	#ifdef __PX4_POSIX
 	if (_param_av_sim_gmb_en.get() == 0) {
@@ -981,7 +985,9 @@ bool AttackVision::get_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, GimbalNed
 	}
 	#endif
 
-	return attack_vision_guidance::compose_gimbal_ned_pose(q_veh_ned, _gimbal_roll,
+	const float mount_yaw = _param_av_mnt_yaw.get() * M_PI_F / 180.0f;
+
+	return attack_vision_guidance::compose_gimbal_ned_pose(vehicle_yaw, mount_yaw,
 			_gimbal_pitch, _gimbal_yaw, pose);
 }
 
@@ -1005,7 +1011,7 @@ bool AttackVision::build_target_los_gimbal(
 {
 	_last_los_gimbal_valid = false;
 	if (!attack_vision_guidance::build_target_los_gimbal(target, camera,
-			_param_av_pix_x_inv.get() != 0, los_gimbal)) {
+			_param_av_pix_x_inv.get() != 0, _gimbal_roll, los_gimbal)) {
 		return false;
 	}
 

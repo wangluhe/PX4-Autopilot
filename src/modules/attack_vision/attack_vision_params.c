@@ -191,6 +191,20 @@ PARAM_DEFINE_INT32(AV_GMB_PIT_INV, 0);
 PARAM_DEFINE_INT32(AV_GMB_ROLL_INV, 1);
 
 /**
+ * 吊舱机械Yaw零位相对机头航向的安装偏差
+ *
+ * 用于G0水平坐标系到PX4 NED航向系的转换。默认0表示吊舱机械yaw零位与机头
+ * 航向一致；正值表示吊舱机械yaw零位相对机头向右/顺时针偏。
+ *
+ * @group Attack Vision
+ * @unit deg
+ * @min -180
+ * @max 180
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_MNT_YAW, 0.0f);
+
+/**
  * 末制导垂向速度限幅，NED坐标下向下为正
  * @group Attack Vision
  * @unit m/s
@@ -234,8 +248,8 @@ PARAM_DEFINE_INT32(AV_SIM_PIX_Y, 0);
 /**
  * 仿真吊舱姿态注入使能
  *
- * 仅在SITL/POSIX仿真中生效。开启后，使用AV_SIM_GMB_*作为相对机体FRD的吊舱姿态，
- * 并让NED目标视线走与实机一致的机体姿态叠加链路。
+ * 仅在SITL/POSIX仿真中生效。开启后，使用AV_SIM_GMB_*作为相对G0水平坐标系的吊舱姿态，
+ * 并让NED目标视线走与实机一致的航向水平叠加链路。
  *
  * @group Attack Vision
  * @min 0

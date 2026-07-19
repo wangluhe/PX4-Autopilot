@@ -56,9 +56,9 @@ bool build_camera_model(int cam_w, int cam_h, float fov_h_deg, float fov_v_deg,
 			bool pixel_y_positive_up, CameraModel &camera);
 
 bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &camera,
-			bool pix_x_inv, matrix::Vector3f &los_gimbal);
+			bool pix_x_inv, float image_roll_rad, matrix::Vector3f &los_gimbal);
 
-bool compose_gimbal_ned_pose(const matrix::Quatf &q_veh_ned, float gimbal_roll,
+bool compose_gimbal_ned_pose(float vehicle_yaw, float mount_yaw,
 			float gimbal_pitch, float gimbal_yaw, GimbalNedPose &pose);
 
 bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vector3f &target_vec_ned,
