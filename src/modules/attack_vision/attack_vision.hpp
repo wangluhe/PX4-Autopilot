@@ -42,9 +42,9 @@
  * @class AttackVision
  * @brief 图像末制导模块主类
  *
- * 继承自ModuleBase、ModuleParams和WorkItem，实现PX4模块标准接口
+ * 继承自ModuleBase、ModuleParams和ScheduledWorkItem，实现PX4模块标准接口
  */
-class AttackVision : public ModuleBase<AttackVision>, public ModuleParams, public px4::WorkItem
+class AttackVision : public ModuleBase<AttackVision>, public ModuleParams, public px4::ScheduledWorkItem
 {
 public:
 	AttackVision();

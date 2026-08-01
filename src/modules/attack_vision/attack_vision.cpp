@@ -43,7 +43,7 @@
  */
 AttackVision::AttackVision()
 	: ModuleParams(nullptr)
-	, WorkItem(MODULE_NAME, px4::wq_configurations::ttyS5)
+	, ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::ttyS5)
 {
 	updateParams();
 
