@@ -16,7 +16,7 @@
 #include <px4_platform_common/module.h>
 #include <px4_platform_common/module_params.h>
 #include <px4_platform_common/time.h>
-#include <px4_platform_common/px4_work_queue/WorkItem.hpp>
+#include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
 #include <matrix/matrix/math.hpp>
 #include "attack_vision_protocol.hpp"
 #include "attack_vision_guidance.hpp"
@@ -143,8 +143,13 @@ private:
 	hrt_abstime _switch_start_time{0};  ///< 模式切换开始时间戳
 	hrt_abstime _last_cmd_publish_time{0};  ///< 上次命令发布的时间戳（用于频率限制）
 	hrt_abstime _last_offboard_exit_time{0};  ///< 最近一次检测到人工退出Offboard的时间戳
+	hrt_abstime _last_status_time{0};  ///< 最近一次状态日志时间戳
+	hrt_abstime _last_control_time{0};  ///< 最近一次控制输出时间戳
+	hrt_abstime _last_drone_status_time{0};  ///< 最近一次无人机状态日志时间戳
+	hrt_abstime _last_frame_log_time{0};  ///< 最近一次吊舱帧日志时间戳
 	bool _manual_offboard_exit_latched{false};  ///< QGC/外部切出Offboard后禁止自动拉回
 	bool _was_vehicle_in_offboard{false};  ///< 用于检测Offboard退出边沿
+	bool _run_initialized{false};  ///< Run()首次调度时完成一次性初始化
 	static constexpr uint64_t MIN_CMD_INTERVAL_US = 500000;  ///< 命令发布最小间隔（500ms）
 	void handle_guidance();  ///< 处理制导逻辑：根据像素偏差计算速度指令
 	bool check_guidance_ready();

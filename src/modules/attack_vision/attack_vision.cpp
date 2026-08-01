@@ -1210,79 +1210,75 @@ bool AttackVision::switch_to_offboard_sim()
 //  */
 void AttackVision::Run()
 {
-	PX4_INFO("=== Attack Vision Run() Started ===");
-	// 检查模块使能开关
-
-	if (_param_av_en.get() == 0) {
-		PX4_INFO("Module disabled (AAATTKVIS_EN=0)");
-		return; // 若未启用，直接退出循环
+	if (should_exit()) {
+		safe_stop_guidance();
+		close_uart();
+		exit_and_cleanup();
+		return;
 	}
 
 	if (_param_av_en.get() <= 0) {
 		PX4_WARN("AAATTKVIS_EN disabled");
+		close_uart();
 		exit_and_cleanup();
 		return;
 	}
 
-	PX4_INFO("Attack Vision module starting...");
+	if (!_run_initialized) {
+		PX4_INFO("=== Attack Vision Run() Started ===");
+		PX4_INFO("Attack Vision module starting...");
 
 	// 打开串口
-	if (!open_uart()) {
-		PX4_ERR("UART open failed");
-		exit_and_cleanup();
-		return;
-	}
-
-	// 确认串口状态
-	if (_fd >= 0) {
-		PX4_INFO("Attack Vision module started successfully - Using %s",
-			#ifdef __PX4_POSIX
-				"virtual serial port"
-			#else
-					"hardware UART /dev/ttyS5"
-			#endif
-				);
-	} else {
-		PX4_ERR("UART file descriptor invalid after open");
-		exit_and_cleanup();
-		return;
-	}
-
-	// 在仿真模式下，跳过RC检测，直接进入Offboard
-	#ifdef __PX4_POSIX
-		PX4_INFO("Simulation Mode: waiting for commander mode OFFBOARD before guidance");
-	#endif
-
-
-	#ifdef __PX4_POSIX
-		if (!_virtual_gimbal_initialized) {
-			_fixed_gimbal_roll_ned = 0.0f;
-			_fixed_gimbal_pitch_ned = 0.0f;
-			_fixed_gimbal_yaw_ned = M_PI_4_F + M_PI_2_F / 3.0f;
-
-			PX4_INFO("【仿真模式】固定吊舱NED目标姿态初始化:");
-			PX4_INFO("  - 目标横滚: %.2f° (%.6f rad)", 0.0, (double)_fixed_gimbal_roll_ned);
-			PX4_INFO("  - 目标俯仰: %.2f° (%.6f rad)", 0.0, (double)_fixed_gimbal_pitch_ned);
-			PX4_INFO("  - 目标偏航: %.2f° (%.6f rad)", (double)(_fixed_gimbal_yaw_ned * 180.0f / M_PI_F), (double)_fixed_gimbal_yaw_ned);
-			PX4_INFO("注意：无人机将尝试跟踪这个固定的NED姿态目标");
-
-			// 4. 为了兼容现有代码，仍需设置机体相对姿态（设为0，表示吊舱与机体对齐）
-			// 因为后面计算误差时，我们直接使用固定NED姿态与无人机NED姿态的差值
-			_gimbal_roll = 0.0f;
-			_gimbal_pitch = 0.0f;
-			_gimbal_yaw = 0.0f;
-
-			_virtual_gimbal_initialized = true;
+		if (!open_uart()) {
+			PX4_ERR("UART open failed");
+			exit_and_cleanup();
+			return;
 		}
-	#endif
+		// 确认串口状态
+		if (_fd >= 0) {
+			PX4_INFO("Attack Vision module started successfully - Using %s",
+				#ifdef __PX4_POSIX
+					"virtual serial port"
+				#else
+					"hardware UART /dev/ttyS5"
+				#endif
+					);
+		} else {
+			PX4_ERR("UART file descriptor invalid after open");
+			exit_and_cleanup();
+			return;
+		}
+
+		#ifdef __PX4_POSIX
+			PX4_INFO("Simulation Mode: waiting for commander mode OFFBOARD before guidance");
+
+			if (!_virtual_gimbal_initialized) {
+				_fixed_gimbal_roll_ned = 0.0f;
+				_fixed_gimbal_pitch_ned = 0.0f;
+				_fixed_gimbal_yaw_ned = M_PI_4_F + M_PI_2_F / 3.0f;
+
+				PX4_INFO("【仿真模式】固定吊舱NED目标姿态初始化:");
+				PX4_INFO("  - 目标横滚: %.2f° (%.6f rad)", 0.0, (double)_fixed_gimbal_roll_ned);
+				PX4_INFO("  - 目标俯仰: %.2f° (%.6f rad)", 0.0, (double)_fixed_gimbal_pitch_ned);
+				PX4_INFO("  - 目标偏航: %.2f° (%.6f rad)",
+					  (double)(_fixed_gimbal_yaw_ned * 180.0f / M_PI_F), (double)_fixed_gimbal_yaw_ned);
+				PX4_INFO("注意：无人机将尝试跟踪这个固定的NED姿态目标");
+
+				// 4. 为了兼容现有代码，仍需设置机体相对姿态（设为0，表示吊舱与机体对齐）
+				// 因为后面计算误差时，我们直接使用固定NED姿态与无人机NED姿态的差值
+				_gimbal_roll = 0.0f;
+				_gimbal_pitch = 0.0f;
+				_gimbal_yaw = 0.0f;
+
+				_virtual_gimbal_initialized = true;
+			}
+		#endif
+
+		_run_initialized = true;
+	}
 
 	const uint64_t control_timeout_us = 50000;
-	static uint64_t last_status_time = 0;
-	static uint64_t last_control_time = 0;
-	static uint64_t last_drone_status_time = 0;
-
-	while (!should_exit()) {
-		uint64_t now = hrt_absolute_time();
+	uint64_t now = hrt_absolute_time();
 
 		if (_parameter_update_sub.updated()) {
 			parameter_update_s param_update{};
@@ -1290,283 +1286,276 @@ void AttackVision::Run()
 			updateParams();
 		}
 
-		// 1) 更新 RC 模式。仿真保留原差异：不依赖实体遥控器，直接视为 Offboard 授权档。
-		#ifdef __PX4_POSIX
-			_current_rc_mode = RCMode::MODE_OFFBOARD;
-		#else
-			const RCMode new_rc_mode = parse_rc_mode();
-			if (new_rc_mode != _current_rc_mode) {
-				PX4_INFO("RC mode changed: %d -> %d", (int)_current_rc_mode, (int)new_rc_mode);
-				_current_rc_mode = new_rc_mode;
-			}
-		#endif
-
-		const bool rc_offboard = (_current_rc_mode == RCMode::MODE_OFFBOARD);
-
-		// 2) 更新上位机协同状态，并根据AV_EXT_MODE计算实际生效的外部任务占用状态。
-		update_external_mission_state(now);
-
-		// 3) 更新吊舱帧。
-		static uint64_t last_frame_log_time = 0;
-		if (try_read_frame() && now - last_frame_log_time > 3000000) {
-			// PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
-			// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
-			last_frame_log_time = now;
+	// 1) 更新 RC 模式。仿真保留原差异：不依赖实体遥控器，直接视为 Offboard 授权档。
+	#ifdef __PX4_POSIX
+		_current_rc_mode = RCMode::MODE_OFFBOARD;
+	#else
+		const RCMode new_rc_mode = parse_rc_mode();
+		if (new_rc_mode != _current_rc_mode) {
+			PX4_INFO("RC mode changed: %d -> %d", (int)_current_rc_mode, (int)new_rc_mode);
+			_current_rc_mode = new_rc_mode;
 		}
+	#endif
 
-		#ifdef __PX4_POSIX
-			if (_param_av_sim_pix_en.get() != 0) {
-				_pix_offset_x = static_cast<int16_t>(math::constrain(_param_av_sim_pix_x.get(), -32768, 32767));
-				_pix_offset_y = static_cast<int16_t>(math::constrain(_param_av_sim_pix_y.get(), -32768, 32767));
-			}
+	const bool rc_offboard = (_current_rc_mode == RCMode::MODE_OFFBOARD);
 
-			if (_param_av_sim_gmb_en.get() != 0) {
-				roll_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_roll.get(), -32768, 32767));
-				pitch_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_pit.get(), -32768, 32767));
-				yaw_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_yaw.get(), -32768, 32767));
+	// 2) 更新上位机协同状态，并根据AV_EXT_MODE计算实际生效的外部任务占用状态。
+	update_external_mission_state(now);
 
-				const float roll_rad = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
-				const float pitch_rad = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
-				const float yaw_rad = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
-				_gimbal_roll = (_param_av_gmb_roll_inv.get() != 0) ? -roll_rad : roll_rad;
-				_gimbal_pitch = (_param_av_gmb_pit_inv.get() != 0) ? -pitch_rad : pitch_rad;
-				_gimbal_yaw = (_param_av_gmb_yaw_inv.get() != 0) ? -yaw_rad : yaw_rad;
-			}
-		#endif
-
-		// try_read_frame() can update _last_frame_time_us after this loop's initial timestamp.
-		// Refresh now before computing frame age to avoid unsigned underflow.
-		now = hrt_absolute_time();
-
-		// 4) 更新飞控状态和统一接管判定。
-		vehicle_status_s vehicle_status{};
-		const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
-		const uint64_t frame_age_us = (_last_frame_time_us > 0) ?
-			((now >= _last_frame_time_us) ? (now - _last_frame_time_us) : 0) : UINT64_MAX;
-		const bool frame_valid_recent = (_last_frame_time_us > 0) && (frame_age_us < FRAME_TIMEOUT_US);
-		const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
-		const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
-
-		if (_was_vehicle_in_offboard && !vehicle_in_offboard) {
-			_manual_offboard_exit_latched = true;
-			_last_offboard_exit_time = now;
-			PX4_INFO("Detected Offboard exit, suppress auto Offboard re-entry until Offboard is selected again");
-		}
-
-		if (vehicle_in_offboard && _manual_offboard_exit_latched) {
-			PX4_INFO("Offboard selected again, auto Offboard re-entry suppression cleared");
-			_manual_offboard_exit_latched = false;
-		}
-
-		_was_vehicle_in_offboard = vehicle_in_offboard;
-
-		_allow_takeover = !_guidance_paused && rc_offboard && !_external_mission_active && _lock_active;
-		const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
-
-		if (!frame_valid_recent || !_lock_active) {
-			_last_los_gimbal_valid = false;
-			_last_target_vec_ned_valid = false;
-		}
-
-		if (_guidance_paused && vehicle_in_offboard && !_external_mission_active) {
-			publish_position_offboard_heartbeat();
-		}
-
-		attack_vision_status_s status{};
-		status.lock_active = _lock_active;
-		status.rc_offboard = rc_offboard;
-		status.external_mission_active = _external_mission_active;
-		status.allow_takeover = _allow_takeover;
-		status.frame_valid = frame_valid_recent;
-		status.pix_offset_x = _pix_offset_x;
-		status.pix_offset_y = _pix_offset_y;
-		status.gimbal_roll_raw_deg100 = roll_deg_100;
-		status.gimbal_pitch_raw_deg100 = pitch_deg_100;
-		status.gimbal_yaw_raw_deg100 = yaw_deg_100;
-		status.gimbal_roll_rad = _gimbal_roll;
-		status.gimbal_pitch_rad = _gimbal_pitch;
-		status.gimbal_yaw_rad = _gimbal_yaw;
-		status.los_gimbal_valid = _last_los_gimbal_valid;
-		status.los_gimbal_x = _last_los_gimbal(0);
-		status.los_gimbal_y = _last_los_gimbal(1);
-		status.los_gimbal_z = _last_los_gimbal(2);
-		status.target_vec_ned_valid = _last_target_vec_ned_valid;
-		status.target_vec_ned_x = _last_target_vec_ned(0);
-		status.target_vec_ned_y = _last_target_vec_ned(1);
-		status.target_vec_ned_z = _last_target_vec_ned(2);
-		const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (frame_age_us / 1000) : UINT32_MAX;
-		status.frame_age_ms = (frame_age_ms > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(frame_age_ms);
-		status.module_state = static_cast<uint8_t>(_module_state);
-		status.timestamp = now;
-		_attack_vision_status_pub.publish(status);
-
-		// 5) 最高优先级：上位机 active 时完全让路，不主动切 HOLD。
-		if (_external_mission_active) {
-			if (_module_state != ModuleState::HOLD) {
-				PX4_INFO("External mission active -> attack_vision idle");
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-			}
-			usleep(20000);
-			continue;
-		}
-
-		// 6) 遥控器退出末制导授权：实机切回 RC 对应模式，未知档位悬停；仿真不会进入该分支。
-		if (!rc_offboard) {
-			if (_module_state != ModuleState::HOLD) {
-				PX4_INFO("RC not in Offboard -> stop guidance");
-				if (_current_rc_mode == RCMode::MODE_UNKNOWN) {
-					switch_to_hold();
-				} else {
-					switch_to_rc_mode(_current_rc_mode);
-				}
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-			}
-			usleep(20000);
-			continue;
-		}
-
-		// 7) 显式状态机：HOLD 等待接管，SWITCHING 预热并切 Offboard，OFFBOARD 执行末制导。
-		switch (_module_state) {
-		case ModuleState::HOLD:
-			if (can_control) {
-				if (vehicle_in_offboard) {
-					PX4_INFO("已在Offboard模式 - 开始末制导%s",
-					#ifdef __PX4_POSIX
-						"(仿真模式)"
-					#else
-						"(RC授权)"
-					#endif
-						);
-					_module_state = ModuleState::OFFBOARD;
-				} else if (!_manual_offboard_exit_latched) {
-					PX4_INFO("末制导条件满足，开始切换到Offboard模式");
-					_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
-					_switch_start_time = now;
-				} else {
-					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-					last_control_time = now;
-					PX4_DEBUG("QGC/外部已切出Offboard，仅预热Offboard setpoint，等待再次选择Offboard");
-				}
-			}
-			break;
-
-		case ModuleState::SWITCHING_TO_OFFBOARD:
-			if (_manual_offboard_exit_latched) {
-				PX4_INFO("QGC/外部已切出Offboard，取消自动切回Offboard");
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-				break;
-			}
-
-			if (_external_mission_active) {
-				PX4_INFO("上位机任务已接管，取消attack_vision自动切Offboard");
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-				break;
-			}
-
-			if (!can_control) {
-				PX4_INFO("Offboard切换条件丢失，attack_vision回到HOLD");
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-				break;
-			}
-
-			if (vehicle_in_offboard) {
-				PX4_INFO("Offboard切换完成 - 开始末制导");
-				_module_state = ModuleState::OFFBOARD;
-				break;
-			}
-
-			publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-			last_control_time = now;
-
-			#ifdef __PX4_POSIX
-				if (switch_to_offboard_sim()) {
-					_module_state = ModuleState::OFFBOARD;
-				}
-			#else
-				switch_to_offboard();
-			#endif
-			break;
-
-		case ModuleState::OFFBOARD:
-			if (_external_mission_active) {
-				PX4_INFO("上位机任务已接管，attack_vision停止末制导并保持让路");
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-				break;
-			}
-
-			if (!vehicle_in_offboard) {
-				PX4_INFO("飞控已退出Offboard，attack_vision保持HOLD且不自动拉回");
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-				break;
-			}
-
-			if (!can_control) {
-				PX4_INFO("末制导条件丢失，attack_vision回到HOLD");
-				if (vehicle_armed && vehicle_in_offboard && !_manual_offboard_exit_latched) {
-					publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
-				}
-				_module_state = ModuleState::HOLD;
-				_switch_start_time = 0;
-				break;
-			}
-
-			if ((now - last_control_time) > control_timeout_us) {
-				handle_guidance();
-				last_control_time = now;
-			}
-			break;
-		}
-
-		if (now - last_status_time > 5000000) {
-			const uint64_t time_since_last = frame_age_us;
-			if (has_vehicle_status) {
-				PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, ext_mode=%d, coord=%d, external_raw=%d, external_active=%d, lock=%d, frame_valid=%d, allow_takeover=%d, can_control=%d, module_state=%d",
-					vehicle_status.nav_state,
-					vehicle_status.arming_state,
-					(int)_current_rc_mode,
-					(int)_param_av_ext_mode.get(),
-					(int)_coordinated_mode_active,
-					(int)_external_mission_active_raw,
-					(int)_external_mission_active,
-					(int)_lock_active,
-					(int)frame_valid_recent,
-					(int)_allow_takeover,
-					(int)can_control,
-					(int)_module_state);
-			}
-
-			PX4_INFO("Target Lock: %s, Pixel Offset: X=%d, Y=%d",
-					_lock_active ? "YES" : "NO",
-					(int)_pix_offset_x,
-					(int)_pix_offset_y);
-
-			if (time_since_last > 1000000) {
-				PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
-			}
-
-			last_status_time = now;
-		}
-
-		if (now - last_drone_status_time > 1000000) {
-			print_drone_status();
-			last_drone_status_time = now;
-		}
-
-		usleep(20000);
+	// 3) 更新吊舱帧。
+	if (try_read_frame() && now - _last_frame_log_time > 3000000) {
+		// PX4_INFO("成功解析帧: lock=%d, pix=(%d,%d)",
+		// 	(int)_lock_active, (int)_pix_offset_x, (int)_pix_offset_y);
+		_last_frame_log_time = now;
 	}
 
-	safe_stop_guidance();
-	close_uart();
-	exit_and_cleanup();
-}
+	#ifdef __PX4_POSIX
+		if (_param_av_sim_pix_en.get() != 0) {
+			_pix_offset_x = static_cast<int16_t>(math::constrain(_param_av_sim_pix_x.get(), -32768, 32767));
+			_pix_offset_y = static_cast<int16_t>(math::constrain(_param_av_sim_pix_y.get(), -32768, 32767));
+		}
 
+		if (_param_av_sim_gmb_en.get() != 0) {
+			roll_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_roll.get(), -32768, 32767));
+			pitch_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_pit.get(), -32768, 32767));
+			yaw_deg_100 = static_cast<int16_t>(math::constrain(_param_av_sim_gmb_yaw.get(), -32768, 32767));
+
+			const float roll_rad = (roll_deg_100 / 100.0f) * M_PI_F / 180.0f;
+			const float pitch_rad = (pitch_deg_100 / 100.0f) * M_PI_F / 180.0f;
+			const float yaw_rad = (yaw_deg_100 / 100.0f) * M_PI_F / 180.0f;
+			_gimbal_roll = (_param_av_gmb_roll_inv.get() != 0) ? -roll_rad : roll_rad;
+			_gimbal_pitch = (_param_av_gmb_pit_inv.get() != 0) ? -pitch_rad : pitch_rad;
+			_gimbal_yaw = (_param_av_gmb_yaw_inv.get() != 0) ? -yaw_rad : yaw_rad;
+		}
+	#endif
+
+	// try_read_frame() can update _last_frame_time_us after this loop's initial timestamp.
+	// Refresh now before computing frame age to avoid unsigned underflow.
+	now = hrt_absolute_time();
+
+	// 4) 更新飞控状态和统一接管判定。
+	vehicle_status_s vehicle_status{};
+	const bool has_vehicle_status = _vehicle_status_sub.copy(&vehicle_status);
+	const uint64_t frame_age_us = (_last_frame_time_us > 0) ?
+		((now >= _last_frame_time_us) ? (now - _last_frame_time_us) : 0) : UINT64_MAX;
+	const bool frame_valid_recent = (_last_frame_time_us > 0) && (frame_age_us < FRAME_TIMEOUT_US);
+	const bool vehicle_armed = has_vehicle_status && (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
+	const bool vehicle_in_offboard = has_vehicle_status && (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+
+	if (_was_vehicle_in_offboard && !vehicle_in_offboard) {
+		_manual_offboard_exit_latched = true;
+		_last_offboard_exit_time = now;
+		PX4_INFO("Detected Offboard exit, suppress auto Offboard re-entry until Offboard is selected again");
+	}
+
+	if (vehicle_in_offboard && _manual_offboard_exit_latched) {
+		PX4_INFO("Offboard selected again, auto Offboard re-entry suppression cleared");
+		_manual_offboard_exit_latched = false;
+	}
+
+	_was_vehicle_in_offboard = vehicle_in_offboard;
+
+	_allow_takeover = !_guidance_paused && rc_offboard && !_external_mission_active && _lock_active;
+	const bool can_control = _allow_takeover && frame_valid_recent && vehicle_armed;
+
+	if (!frame_valid_recent || !_lock_active) {
+		_last_los_gimbal_valid = false;
+		_last_target_vec_ned_valid = false;
+	}
+
+	if (_guidance_paused && vehicle_in_offboard && !_external_mission_active) {
+		publish_position_offboard_heartbeat();
+	}
+
+	attack_vision_status_s status{};
+	status.lock_active = _lock_active;
+	status.rc_offboard = rc_offboard;
+	status.external_mission_active = _external_mission_active;
+	status.allow_takeover = _allow_takeover;
+	status.frame_valid = frame_valid_recent;
+	status.pix_offset_x = _pix_offset_x;
+	status.pix_offset_y = _pix_offset_y;
+	status.gimbal_roll_raw_deg100 = roll_deg_100;
+	status.gimbal_pitch_raw_deg100 = pitch_deg_100;
+	status.gimbal_yaw_raw_deg100 = yaw_deg_100;
+	status.gimbal_roll_rad = _gimbal_roll;
+	status.gimbal_pitch_rad = _gimbal_pitch;
+	status.gimbal_yaw_rad = _gimbal_yaw;
+	status.los_gimbal_valid = _last_los_gimbal_valid;
+	status.los_gimbal_x = _last_los_gimbal(0);
+	status.los_gimbal_y = _last_los_gimbal(1);
+	status.los_gimbal_z = _last_los_gimbal(2);
+	status.target_vec_ned_valid = _last_target_vec_ned_valid;
+	status.target_vec_ned_x = _last_target_vec_ned(0);
+	status.target_vec_ned_y = _last_target_vec_ned(1);
+	status.target_vec_ned_z = _last_target_vec_ned(2);
+	const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (frame_age_us / 1000) : UINT32_MAX;
+	status.frame_age_ms = (frame_age_ms > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(frame_age_ms);
+	status.module_state = static_cast<uint8_t>(_module_state);
+	status.timestamp = now;
+	_attack_vision_status_pub.publish(status);
+
+	// 5) 最高优先级：上位机 active 时完全让路，不主动切 HOLD。
+	if (_external_mission_active) {
+		if (_module_state != ModuleState::HOLD) {
+			PX4_INFO("External mission active -> attack_vision idle");
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+		}
+		ScheduleDelayed(20000);
+		return;
+	}
+
+	// 6) 遥控器退出末制导授权：实机切回 RC 对应模式，未知档位悬停；仿真不会进入该分支。
+	if (!rc_offboard) {
+		if (_module_state != ModuleState::HOLD) {
+			PX4_INFO("RC not in Offboard -> stop guidance");
+			if (_current_rc_mode == RCMode::MODE_UNKNOWN) {
+				switch_to_hold();
+			} else {
+				switch_to_rc_mode(_current_rc_mode);
+			}
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+		}
+		ScheduleDelayed(20000);
+		return;
+	}
+
+	// 7) 显式状态机：HOLD 等待接管，SWITCHING 预热并切 Offboard，OFFBOARD 执行末制导。
+	switch (_module_state) {
+	case ModuleState::HOLD:
+		if (can_control) {
+			if (vehicle_in_offboard) {
+				PX4_INFO("已在Offboard模式 - 开始末制导%s",
+				#ifdef __PX4_POSIX
+					"(仿真模式)"
+				#else
+					"(RC授权)"
+				#endif
+					);
+				_module_state = ModuleState::OFFBOARD;
+			} else if (!_manual_offboard_exit_latched) {
+				PX4_INFO("末制导条件满足，开始切换到Offboard模式");
+				_module_state = ModuleState::SWITCHING_TO_OFFBOARD;
+				_switch_start_time = now;
+			} else {
+				publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+				_last_control_time = now;
+				PX4_DEBUG("QGC/外部已切出Offboard，仅预热Offboard setpoint，等待再次选择Offboard");
+			}
+		}
+		break;
+
+	case ModuleState::SWITCHING_TO_OFFBOARD:
+		if (_manual_offboard_exit_latched) {
+			PX4_INFO("QGC/外部已切出Offboard，取消自动切回Offboard");
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+			break;
+		}
+
+		if (_external_mission_active) {
+			PX4_INFO("上位机任务已接管，取消attack_vision自动切Offboard");
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+			break;
+		}
+
+		if (!can_control) {
+			PX4_INFO("Offboard切换条件丢失，attack_vision回到HOLD");
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+			break;
+		}
+
+		if (vehicle_in_offboard) {
+			PX4_INFO("Offboard切换完成 - 开始末制导");
+			_module_state = ModuleState::OFFBOARD;
+			break;
+		}
+
+		publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+		_last_control_time = now;
+
+		#ifdef __PX4_POSIX
+			if (switch_to_offboard_sim()) {
+				_module_state = ModuleState::OFFBOARD;
+			}
+		#else
+			switch_to_offboard();
+		#endif
+		break;
+
+	case ModuleState::OFFBOARD:
+		if (_external_mission_active) {
+			PX4_INFO("上位机任务已接管，attack_vision停止末制导并保持让路");
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+			break;
+		}
+
+		if (!vehicle_in_offboard) {
+			PX4_INFO("飞控已退出Offboard，attack_vision保持HOLD且不自动拉回");
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+			break;
+		}
+
+		if (!can_control) {
+			PX4_INFO("末制导条件丢失，attack_vision回到HOLD");
+			if (vehicle_armed && vehicle_in_offboard && !_manual_offboard_exit_latched) {
+				publish_offboard_velocity(0.0f, 0.0f, 0.0f, 0.0f);
+			}
+			_module_state = ModuleState::HOLD;
+			_switch_start_time = 0;
+			break;
+		}
+
+		if ((now - _last_control_time) > control_timeout_us) {
+			handle_guidance();
+			_last_control_time = now;
+		}
+		break;
+	}
+
+	if (now - _last_status_time > 5000000) {
+		const uint64_t time_since_last = frame_age_us;
+		if (has_vehicle_status) {
+			PX4_INFO("飞控状态: nav_state=%d, arming_state=%d, rc_mode=%d, ext_mode=%d, coord=%d, external_raw=%d, external_active=%d, lock=%d, frame_valid=%d, allow_takeover=%d, can_control=%d, module_state=%d",
+				vehicle_status.nav_state,
+				vehicle_status.arming_state,
+				(int)_current_rc_mode,
+				(int)_param_av_ext_mode.get(),
+				(int)_coordinated_mode_active,
+				(int)_external_mission_active_raw,
+				(int)_external_mission_active,
+				(int)_lock_active,
+				(int)frame_valid_recent,
+				(int)_allow_takeover,
+				(int)can_control,
+				(int)_module_state);
+		}
+
+		PX4_INFO("Target Lock: %s, Pixel Offset: X=%d, Y=%d",
+				_lock_active ? "YES" : "NO",
+				(int)_pix_offset_x,
+				(int)_pix_offset_y);
+
+		if (time_since_last > 1000000) {
+			PX4_WARN("长时间未收到帧数据: %.1f 秒", (double)(time_since_last) / 1000000.0);
+		}
+
+		_last_status_time = now;
+	}
+
+	if (now - _last_drone_status_time > 1000000) {
+		print_drone_status();
+		_last_drone_status_time = now;
+	}
+
+	ScheduleDelayed(20000);
+}
 
 extern "C" __EXPORT int attack_vision_main(int argc, char *argv[])
 {
