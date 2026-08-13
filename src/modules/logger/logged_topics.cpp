@@ -74,6 +74,8 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("flight_phase_estimation", 1000);
 	add_optional_topic("fuel_tank_status", 10);
 	add_topic("gimbal_manager_set_attitude", 500);
+	// attack_vision publishes at the gimbal feedback rate (25 Hz / 40 ms).
+	add_topic("attack_vision_status", 40);
 	add_optional_topic("generator_status");
 	add_optional_topic("gps_dump");
 	add_optional_topic("gimbal_controls", 200);

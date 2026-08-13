@@ -311,6 +311,10 @@ attack_vision status
 # 方法1：通过MAVLink
 listener attack_vision
 
+# 方法1b：通过 ULog（地面分析）
+ulog_info <path-to-log.ulg> | grep attack_vision_status
+ulog2csv -m attack_vision_status <path-to-log.ulg>
+
 # 方法2：通过QGroundControl
 # 进入 Logs 界面查看
 

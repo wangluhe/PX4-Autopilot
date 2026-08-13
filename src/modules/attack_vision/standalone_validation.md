@@ -161,6 +161,10 @@ los_gimbal_*: 相机/吊舱坐标系下的单位视线方向（默认已经过 A
 target_vec_ned_*: 转到 NED 后的单位目标方向
 ```
 
+默认 logger 会以 25 Hz（40 ms）记录完整的 `attack_vision_status`。对比 LOS
+滤波效果时，重点导出 `timestamp`、`pix_offset_x/y`、`los_gimbal_x/y/z`、
+`target_vec_ned_x/y/z`、`frame_valid`、`lock_active` 和 `frame_age_ms`。
+
 `AV_LOS_TAU` 使用一阶低通时间常数，单位为秒。吊舱协议反馈频率为25Hz；默认
 `0.10` 可先用于抑制像素抖动。设置为 `0` 时旁路滤波。滤波只在收到新的有效
 吊舱帧时推进一次，工作队列重复运行不会重复衰减同一帧数据。失锁、帧超时或

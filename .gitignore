@@ -3,6 +3,10 @@
 *.gch
 *.pyc
 *~
+.venv/
+.venv-*/
+venv/
+venv-*/
 .*.swp
 .context
 .cproject
