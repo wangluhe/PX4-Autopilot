@@ -98,6 +98,7 @@ param set AV_MNT_YAW 90
 ```sh
 param set AV_FORWARD_V 0.2
 param set AV_MAX_VZ 0.2
+param set AV_LOS_TAU 0.10
 ```
 
 实机飞行确认稳定后，再逐步提高，例如：
@@ -121,6 +122,7 @@ param show AV_GMB_ROLL_INV
 param show AV_MNT_YAW
 param show AV_FORWARD_V
 param show AV_MAX_VZ
+param show AV_LOS_TAU
 ```
 
 如需保存到飞控，下次上电自动加载：
@@ -155,9 +157,14 @@ module_state: 0=HOLD, 1=SWITCHING_TO_OFFBOARD, 2=OFFBOARD
 pix_offset_x/y: 像素脱靶量
 gimbal_*_raw_deg100: 吊舱原始角度，单位 deg*100
 gimbal_*_rad: 经过 AV_GMB_*_INV 转换后的弧度值
-los_gimbal_*: 相机/吊舱视线方向
+los_gimbal_*: 相机/吊舱坐标系下的单位视线方向（默认已经过 AV_LOS_TAU 一阶低通）
 target_vec_ned_*: 转到 NED 后的单位目标方向
 ```
+
+`AV_LOS_TAU` 使用一阶低通时间常数，单位为秒。吊舱协议反馈频率为25Hz；默认
+`0.10` 可先用于抑制像素抖动。设置为 `0` 时旁路滤波。滤波只在收到新的有效
+吊舱帧时推进一次，工作队列重复运行不会重复衰减同一帧数据。失锁、帧超时或
+重新捕获目标时滤波状态会清零并用第一帧重新初始化。
 
 注意：未解锁、未进入 Offboard、未允许接管时，`los_gimbal_valid` 和 `target_vec_ned_valid` 可能为 `False`，这是正常的。地面静态测试重点看串口帧、像素、吊舱角和符号。
 
@@ -206,6 +213,7 @@ param show AAATTKVIS_EN
 param show AV_EXT_MODE
 param show AV_FORWARD_V
 param show AV_MAX_VZ
+param show AV_LOS_TAU
 param show AV_MNT_YAW
 param show AV_SIM_PIX_EN
 param show AV_SIM_GMB_EN

@@ -214,6 +214,20 @@ PARAM_DEFINE_FLOAT(AV_MNT_YAW, 0.0f);
 PARAM_DEFINE_FLOAT(AV_MAX_VZ, 0.8f);
 
 /**
+ * LOS一阶低通滤波时间常数
+ *
+ * 滤波对象为吊舱/相机坐标系下的单位LOS向量。0表示关闭滤波；
+ * 吊舱协议反馈频率为25Hz，默认0.10s用于抑制像素抖动，同时保留可接受的响应速度。
+ *
+ * @group Attack Vision
+ * @unit s
+ * @min 0
+ * @max 2
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_LOS_TAU, 0.10f);
+
+/**
  * 仿真像素脱靶量注入使能
  *
  * 仅在SITL/POSIX仿真中生效。开启后，使用AV_SIM_PIX_X/Y覆盖仿真吊舱帧中的像素脱靶量。

@@ -8,6 +8,7 @@
 2. **数据解析**：解析锁定状态（第5-6字节Bit9~Bit10）和目标脱靶量（第59-62字节）
 3. **自动制导**：当锁定有效时，自动切换到Offboard模式并发布速度控制指令
 4. **安全保护**：失锁或超时（200ms无数据）时，自动切换回悬停模式
+5. **LOS滤波**：对吊舱坐标系下的单位LOS向量使用一阶低通，抑制像素抖动
 
 ## 二、硬件连接
 
@@ -101,6 +102,7 @@ make px4_fmu-v6xrt_default upload
 | `AV_KP` | FLOAT | 0.001 | 速度控制增益（m/s每像素） |
 | `AV_DEAD` | FLOAT | 5.0 | 像素死区阈值（像素，小于此值不产生控制） |
 | `AV_MAX_V` | FLOAT | 1.0 | 最大速度限制（m/s） |
+| `AV_LOS_TAU` | FLOAT | 0.10 | LOS一阶低通时间常数（秒）；0=关闭滤波 |
 
 ### 5.2 参数设置方法
 
@@ -122,6 +124,7 @@ param set AV_BAUD 115200
 param set AV_KP 0.001
 param set AV_DEAD 5.0
 param set AV_MAX_V 1.0
+param set AV_LOS_TAU 0.10
 
 # 保存参数
 param save
@@ -142,6 +145,11 @@ param save
 - **AV_MAX_V**（最大速度）：
   - 根据飞行安全要求设置
   - 建议范围：0.5 ~ 2.0 m/s
+
+- **AV_LOS_TAU**（LOS滤波时间常数）：
+  - 增大可进一步抑制像素抖动，但会增加目标方向响应延迟
+  - 减小可提高响应速度，但对吊舱反馈噪声更敏感
+  - 推荐先使用 `0.05 ~ 0.15 s`；设置为 `0` 旁路滤波
 
 ## 六、模块启动
 
@@ -184,6 +192,7 @@ attack_vision status
    - [ ] 设置 `AAATTKVIS_EN = 1`（启用模块）
    - [ ] 设置 `AV_BAUD`（与吊舱波特率一致）
    - [ ] 调整 `AV_KP`、`AV_DEAD`、`AV_MAX_V`（根据实际情况）
+   - [ ] 根据目标抖动调整 `AV_LOS_TAU`（默认 `0.10 s`）
 
 3. **飞控配置**：
    - [ ] 允许Offboard模式（参数 `COM_OF_LOSS_T` > 0）
@@ -573,4 +582,3 @@ listener trajectory_setpoint
 - 串口打开失败：确认 `socat` 正在运行并生成 `/tmp/attack_vision_tty`
 - 无速度输出：检查 `AV_*` 参数、锁定位（Bit9~10）、伺服状态（0x07）
 - 校验失败：确认异或范围索引 `[2..61]`，校验位索引 `62`，帧尾 `0xF0`
-
