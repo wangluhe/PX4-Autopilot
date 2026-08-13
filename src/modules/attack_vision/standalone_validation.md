@@ -588,8 +588,8 @@ param set AV_GMB_PIT_INV 0
 param set AV_GMB_ROLL_INV 1
 param set AV_MNT_YAW 0
 
-param set AV_FORWARD_V 0.2
-param set AV_MAX_VZ 0.2
+param set AV_FORWARD_V 1.5
+param set AV_MAX_VZ 1.5
 
 param set AV_SIM_PIX_EN 0
 param set AV_SIM_GMB_EN 0
