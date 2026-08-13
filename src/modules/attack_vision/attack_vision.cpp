@@ -171,6 +171,7 @@ int AttackVision::print_usage(const char *reason)
 		- AV_BAUD: 串口波特率（默认115200）
 		- AV_FORWARD_V: 当前LOS制导前向接近速度限制
 		- AV_MAX_VZ: 当前LOS制导垂向速度限制
+		- AV_LOS_TAU: LOS一阶低通时间常数（秒，0表示关闭）
 		- AV_PIX_X_INV/AV_PIX_Y_INV: 像素脱靶量到相机FRD坐标的符号转换
 		- AV_GMB_YAW_INV/AV_GMB_PIT_INV/AV_GMB_ROLL_INV: 吊舱姿态角到PX4 FRD坐标的符号转换
 		- AV_MNT_YAW: 吊舱机械yaw零位相对机头航向的安装偏差
@@ -692,6 +693,7 @@ void AttackVision::reset_guidance_state()
 	_last_target_vec_ned.zero();
 	_last_los_gimbal_valid = false;
 	_last_target_vec_ned_valid = false;
+	reset_los_filter();
 }
 
 void AttackVision::update_external_mission_state(uint64_t now_us)
@@ -936,14 +938,17 @@ bool AttackVision::check_guidance_ready()
 	const float fov_h_deg = _param_av_fov_h.get();
 	const float fov_v_deg = _param_av_fov_v.get();
 	const float mount_yaw_deg = _param_av_mnt_yaw.get();
+	const float los_tau_s = _param_av_los_tau.get();
 	const int cam_w = _param_av_cam_w.get();
 	const int cam_h = _param_av_cam_h.get();
 
 	// 制导算法依赖相机内参和速度限幅，参数异常时直接跳过本周期控制。
 	if (!PX4_ISFINITE(max_forward_v) || !PX4_ISFINITE(max_vz) ||
 		!PX4_ISFINITE(mount_yaw_deg) ||
+		!PX4_ISFINITE(los_tau_s) ||
 		!PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
 		max_forward_v < 0.0f || max_vz < 0.0f ||
+		los_tau_s < 0.0f || los_tau_s > 2.0f ||
 		mount_yaw_deg < -180.0f || mount_yaw_deg > 180.0f ||
 		fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
 		fov_v_deg <= 0.0f || fov_v_deg >= 179.0f ||
@@ -1004,19 +1009,85 @@ bool AttackVision::build_camera_model(CameraModel &camera)
 			_param_av_pix_y_inv.get() != 0, camera);
 }
 
+// target       目标像素偏差和锁定状态
+// camera       相机宽度、高度、水平/垂直视场角
+// los_gimbal   输出的滤波后吊舱坐标系 LOS
 bool AttackVision::build_target_los_gimbal(
 	const VisionTarget &target,
 	const CameraModel &camera,
 	matrix::Vector3f &los_gimbal)
 {
 	_last_los_gimbal_valid = false;
+	// 创建临时向量，保存滤波前的原始 LOS。
+	matrix::Vector3f raw_los_gimbal{};
 	if (!attack_vision_guidance::build_target_los_gimbal(target, camera,
-			_param_av_pix_x_inv.get() != 0, _gimbal_roll, los_gimbal)) {
+			_param_av_pix_x_inv.get() != 0, _gimbal_roll, raw_los_gimbal)) {
+		reset_los_filter();
+		return false;
+	}
+
+	if (!update_los_filter(raw_los_gimbal, los_gimbal)) {
 		return false;
 	}
 
 	_last_los_gimbal = los_gimbal;
 	_last_los_gimbal_valid = true;
+	return true;
+}
+
+void AttackVision::reset_los_filter()
+{
+	_los_filter.reset(matrix::Vector3f{});
+	_los_filter_initialized = false;
+	_los_filter_sample_time_us = 0;
+}
+
+bool AttackVision::update_los_filter(const matrix::Vector3f &raw_los_gimbal,
+							matrix::Vector3f &filtered_los_gimbal)
+{
+	const float tau_s = _param_av_los_tau.get();
+	if (!PX4_ISFINITE(tau_s) || tau_s < 0.0f) {
+		PX4_ERR("AV_LOS_TAU invalid: %.3f", (double)tau_s);
+		return false;
+	}
+
+	if (raw_los_gimbal.norm() <= 1e-3f) {
+		return false;
+	}
+
+	if (tau_s <= 0.0f) {
+		filtered_los_gimbal = raw_los_gimbal;
+		filtered_los_gimbal.normalize();
+		_los_filter.reset(filtered_los_gimbal);
+		_los_filter_initialized = true;
+		_los_filter_sample_time_us = _last_frame_time_us;
+		return true;
+	}
+
+	// Only advance the filter once per new 25 Hz payload frame. The work queue
+	// may run more often than the gimbal feedback rate.
+	if (!_los_filter_initialized) {
+		_los_filter.reset(raw_los_gimbal);
+		_los_filter_initialized = true;
+		_los_filter_sample_time_us = _last_frame_time_us;
+
+	} else if (_last_frame_time_us != _los_filter_sample_time_us) {
+		const uint64_t sample_dt_us = (_last_frame_time_us > _los_filter_sample_time_us) ?
+			(_last_frame_time_us - _los_filter_sample_time_us) : 40000;
+		const float sample_dt_s = math::constrain(static_cast<float>(sample_dt_us) * 1e-6f,
+									0.001f, 0.5f);
+		_los_filter.setParameters(sample_dt_s, tau_s);
+		_los_filter.update(raw_los_gimbal);
+		_los_filter_sample_time_us = _last_frame_time_us;
+	}
+
+	filtered_los_gimbal = _los_filter.getState();
+	if (filtered_los_gimbal.norm() <= 1e-3f) {
+		return false;
+	}
+
+	filtered_los_gimbal.normalize();
+	_los_filter.reset(filtered_los_gimbal);
 	return true;
 }
 
@@ -1361,6 +1432,7 @@ void AttackVision::Run()
 	if (!frame_valid_recent || !_lock_active) {
 		_last_los_gimbal_valid = false;
 		_last_target_vec_ned_valid = false;
+		reset_los_filter();
 	}
 
 	if (_guidance_paused && vehicle_in_offboard && !_external_mission_active) {

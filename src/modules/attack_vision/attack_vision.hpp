@@ -18,6 +18,7 @@
 #include <px4_platform_common/time.h>
 #include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
 #include <matrix/matrix/math.hpp>
+#include <lib/mathlib/math/filter/AlphaFilter.hpp>
 #include "attack_vision_protocol.hpp"
 #include "attack_vision_guidance.hpp"
 #include <uORB/uORB.h>
@@ -128,6 +129,9 @@ private:
 	matrix::Vector3f _last_target_vec_ned{};  // 最近一次转换到NED的目标视线
 	bool _last_los_gimbal_valid{false};
 	bool _last_target_vec_ned_valid{false};
+	AlphaFilter<matrix::Vector3f> _los_filter{}; ///< 吊舱坐标系下的LOS一阶低通
+	bool _los_filter_initialized{false};
+	uint64_t _los_filter_sample_time_us{0};
 
 	// ========== 状态机相关 ==========
 	enum class ModuleState {
@@ -158,6 +162,8 @@ private:
 	bool build_vision_target(VisionTarget &target);
 	bool build_camera_model(CameraModel &camera);
 	bool build_target_los_gimbal(const VisionTarget &target, const CameraModel &camera, matrix::Vector3f &los_gimbal);
+	void reset_los_filter();
+	bool update_los_filter(const matrix::Vector3f &raw_los_gimbal, matrix::Vector3f &filtered_los_gimbal);
 	bool build_guidance_command(const VehicleGuidanceState &veh, const GimbalNedPose &gimbal,
 					const VisionTarget &target, const CameraModel &camera, GuidanceCommand &cmd);
 	void publish_guidance_command(const GuidanceCommand &cmd);
@@ -228,6 +234,7 @@ private:
 		(ParamInt<px4::params::AV_GMB_ROLL_INV>) _param_av_gmb_roll_inv,
 		(ParamFloat<px4::params::AV_MNT_YAW>) _param_av_mnt_yaw,
 		(ParamFloat<px4::params::AV_MAX_VZ>) _param_av_max_vz,
+		(ParamFloat<px4::params::AV_LOS_TAU>) _param_av_los_tau,
 		(ParamInt<px4::params::AV_SIM_PIX_EN>) _param_av_sim_pix_en,
 		(ParamInt<px4::params::AV_SIM_PIX_X>) _param_av_sim_pix_x,
 		(ParamInt<px4::params::AV_SIM_PIX_Y>) _param_av_sim_pix_y,
