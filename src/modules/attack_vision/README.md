@@ -586,3 +586,32 @@ listener trajectory_setpoint
 - 串口打开失败：确认 `socat` 正在运行并生成 `/tmp/attack_vision_tty`
 - 无速度输出：检查 `AV_*` 参数、锁定位（Bit9~10）、伺服状态（0x07）
 - 校验失败：确认异或范围索引 `[2..61]`，校验位索引 `62`，帧尾 `0xF0`
+
+## 13. ULog 导出 Excel
+
+安装依赖（已有 `.venv-pyulog` 时只需执行一次）：
+
+```bash
+cd $HOME/px4_wlh/px4rt
+python3 -m venv .venv-pyulog
+.venv-pyulog/bin/pip install pyulog openpyxl
+```
+
+导出一个或多个日志：
+
+```bash
+.venv-pyulog/bin/python Tools/attack_vision_ulog_to_xlsx.py log/log_200_2026-8-19-18-37-40.ulg
+
+.venv-pyulog/bin/python Tools/attack_vision_ulog_to_xlsx.py \
+    log/log_200_2026-8-19-18-37-40.ulg \
+    log/log_202_2026-8-19-18-46-34.ulg
+```
+
+输出固定写入仓库根目录的 `outputs/`，文件名与 ULog 保持一致，仅将扩展名改为 `.xlsx`。例如：
+
+```text
+log/log_200_2026-8-19-18-37-40.ulg
+  -> outputs/log_200_2026-8-19-18-37-40.xlsx
+```
+
+每个工作簿包含参数、制导区间、`attack_vision_status`、轨迹设定、实际位置速度、推力、电机、电池和估计器等工作表。数据表首列 `time_s` 是相对日志起点的秒数；NED 坐标下 `vz > 0` 表示下降。重复导出同名日志会覆盖已有的同名 Excel。
