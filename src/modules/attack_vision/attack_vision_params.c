@@ -113,7 +113,8 @@ PARAM_DEFINE_INT32(AV_CAM_H, 1080);
  * @max 179
  * @reboot_required false
  */
-PARAM_DEFINE_FLOAT(AV_FOV_H, 70.4f);
+// PARAM_DEFINE_FLOAT(AV_FOV_H, 70.4f);
+PARAM_DEFINE_FLOAT(AV_FOV_H, 30.9f);
 
 /**
  * 相机垂直视场角，默认使用CGTD055宽视场
@@ -123,7 +124,8 @@ PARAM_DEFINE_FLOAT(AV_FOV_H, 70.4f);
  * @max 179
  * @reboot_required false
  */
-PARAM_DEFINE_FLOAT(AV_FOV_V, 39.6f);
+// PARAM_DEFINE_FLOAT(AV_FOV_V, 39.6f);
+PARAM_DEFINE_FLOAT(AV_FOV_V, 17.4f);
 
 /**
  * 像素X方向符号转换

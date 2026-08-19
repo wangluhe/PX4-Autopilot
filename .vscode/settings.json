@@ -137,4 +137,5 @@
                 "/opt/ros/jazzy/lib/python3.12/site-packages"
         ],
         "ROS2.distro": "jazzy",
+        "commentTranslate.hover.enabled": false,
 }
