@@ -230,6 +230,72 @@ PARAM_DEFINE_FLOAT(AV_MAX_VZ, 0.8f);
 PARAM_DEFINE_FLOAT(AV_LOS_TAU, 0.10f);
 
 /**
+ * Low-target descent shaping enable
+ *
+ * Uses PX4 local height and downward LOS pitch to reduce only positive NED
+ * velocity commands. Targets above the vehicle keep the original guidance.
+ *
+ * @group Attack Vision
+ * @boolean
+ * @reboot_required false
+ */
+PARAM_DEFINE_INT32(AV_DN_SHAPE_EN, 0);
+
+/**
+ * Local height where low-angle descent is fully suppressed
+ *
+ * This is height above the PX4 local NED origin, not terrain AGL.
+ *
+ * @group Attack Vision
+ * @unit m
+ * @min 0
+ * @max 20
+ * @decimal 2
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_LOCAL_H_STOP, 0.8f);
+
+/**
+ * Local height where descent shaping is removed
+ *
+ * Must be greater than AV_LOCAL_H_STOP.
+ *
+ * @group Attack Vision
+ * @unit m
+ * @min 0.1
+ * @max 50
+ * @decimal 2
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_LOCAL_H_FULL, 2.0f);
+
+/**
+ * Downward LOS pitch where angle-based descent is suppressed
+ *
+ * @group Attack Vision
+ * @unit deg
+ * @min 0
+ * @max 45
+ * @decimal 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_PITCH_STOP, 3.0f);
+
+/**
+ * Downward LOS pitch where angle-based descent is fully allowed
+ *
+ * Must be greater than AV_PITCH_STOP.
+ *
+ * @group Attack Vision
+ * @unit deg
+ * @min 0.1
+ * @max 90
+ * @decimal 1
+ * @reboot_required false
+ */
+PARAM_DEFINE_FLOAT(AV_PITCH_FULL, 12.0f);
+
+/**
  * 仿真像素脱靶量注入使能
  *
  * 仅在SITL/POSIX仿真中生效。开启后，使用AV_SIM_PIX_X/Y覆盖仿真吊舱帧中的像素脱靶量。
