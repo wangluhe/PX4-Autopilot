@@ -18,3 +18,8 @@ px4_add_module(
 		px4_work_queue
 )
 
+px4_add_unit_gtest(
+	SRC attack_vision_guidance_test.cpp
+	EXTRA_SRCS attack_vision_guidance.cpp
+	INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+)
