@@ -9,7 +9,23 @@ struct VehicleGuidanceState {
 	float veh_roll{0.0f};
 	float veh_pitch{0.0f};
 	float veh_yaw{0.0f};
+	float local_height{0.0f};
+	bool local_height_valid{false};
 	bool valid{false};
+};
+
+enum class TargetVerticalRelation : uint8_t {
+	LEVEL = 0,
+	BELOW = 1,
+	ABOVE = 2,
+};
+
+struct DescentShapingConfig {
+	bool enabled{false};
+	float local_height_stop{0.8f};
+	float local_height_full{2.0f};
+	float pitch_stop_rad{0.0f};
+	float pitch_full_rad{0.0f};
 };
 
 struct GimbalNedPose {
@@ -43,6 +59,14 @@ struct GuidanceCommand {
 	float vy_ned{0.0f};
 	float vz_ned{0.0f};
 	float target_yaw_rate{0.0f};
+	float vz_raw_ned{0.0f};
+	float local_height{0.0f};
+	float los_pitch_down_rad{0.0f};
+	float height_scale{1.0f};
+	float angle_scale{1.0f};
+	float descent_scale{1.0f};
+	TargetVerticalRelation target_relation{TargetVerticalRelation::LEVEL};
+	bool local_height_valid{false};
 	bool valid{false};
 };
 
@@ -62,6 +86,6 @@ bool compose_gimbal_ned_pose(float vehicle_yaw, float mount_yaw,
 			float gimbal_pitch, float gimbal_yaw, GimbalNedPose &pose);
 
 bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vector3f &target_vec_ned,
-			float max_forward_v, float max_vz, GuidanceCommand &cmd);
+			float max_forward_v, float max_vz, const DescentShapingConfig &shaping, GuidanceCommand &cmd);
 
 } // namespace attack_vision_guidance
