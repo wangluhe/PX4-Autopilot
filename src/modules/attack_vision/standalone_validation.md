@@ -972,7 +972,211 @@ trajectory_setpoint.velocity[1] ~= target_vec_ned_y * AV_FORWARD_V
 trajectory_setpoint.velocity[2] ~= target_vec_ned_z * AV_FORWARD_V，并受 AV_MAX_VZ 限幅
 ```
 
-### 5.5 人工退出和恢复
+### 5.5 低空、小俯角下降整形实测步骤
+
+该项用于验证“目标比飞机低、但飞机已经低空且 LOS 向下俯角较小”时，算法是否会减小下降速度指令，避免过早贴近地面飞行。
+
+#### 5.5.1 飞前参数
+
+首次实测建议先使用低速度，确认逻辑正确后再逐步提高：
+
+```sh
+param set AV_FORWARD_V 1.5
+param set AV_MAX_VZ 1.5
+param set AV_LOS_TAU 0.0
+
+param set AV_LOCAL_H_STOP 0.8
+param set AV_LOCAL_H_FULL 2.0
+param set AV_PITCH_STOP 3.0
+param set AV_PITCH_FULL 12.0
+param set AV_DN_SHAPE_EN 1
+```
+
+确认参数：
+
+```sh
+param show AV_FORWARD_V
+param show AV_MAX_VZ
+param show AV_LOS_TAU
+param show AV_DN_SHAPE_EN
+param show AV_LOCAL_H_STOP
+param show AV_LOCAL_H_FULL
+param show AV_PITCH_STOP
+param show AV_PITCH_FULL
+```
+
+如需保存：
+
+```sh
+param save
+```
+
+紧急回滚下降整形：
+
+```sh
+param set AV_DN_SHAPE_EN 0
+```
+
+#### 5.5.2 地面通电预检查
+
+不装桨或不起飞前，先确认吊舱帧和锁定状态正常：
+
+```sh
+attack_vision status
+listener attack_vision_status
+```
+
+期望：
+
+```text
+frame_valid: True
+frame_age_ms < 200
+lock_active 可随吊舱锁定正常变化
+```
+
+若此时未解锁、未进入 Offboard：
+
+```text
+guidance_command_valid: False
+local_height_valid 可能为 False
+target_relation 可能保持 LEVEL
+```
+
+这是正常的。下降整形字段需要进入实际末制导计算后才有完整意义。
+
+#### 5.5.3 起飞到安全高度并锁定低目标
+
+建议先在 Position 模式起飞到 `2~3 m`，稳定悬停后锁定地面或接近地面的目标，例如车辆顶部、人员上半身或地面标记。
+
+观察：
+
+```sh
+listener vehicle_local_position
+listener attack_vision_status
+```
+
+进入末制导前先确认：
+
+```text
+frame_valid: True
+lock_active: True
+local_height 接近当前本地高度
+```
+
+注意：`local_height = -vehicle_local_position.z`，它是相对 PX4 本地 NED 原点的高度，不是真实对地 AGL。平地短时间测试可近似使用，地形变化或气压漂移时要谨慎解释。
+
+#### 5.5.4 进入 Offboard 并观察整形字段
+
+切入 Offboard 或触发 RC Offboard 档位后，连续观察：
+
+```sh
+listener attack_vision_status
+listener trajectory_setpoint
+listener vehicle_local_position
+```
+
+重点字段：
+
+```text
+target_relation: 1 表示目标在飞机下方，下降整形可能生效
+local_height_valid: True 表示本地高度可用于整形
+los_pitch_down_rad: LOS 向下俯角，单位 rad
+vz_raw_ned: 原始 NED Down 速度指令
+height_scale: 高度缩放，0~1
+angle_scale: 俯角缩放，0~1
+descent_scale: 最终下降缩放，0~1
+vz_cmd_ned: 整形后的 NED Down 速度指令
+guidance_command_valid: True 表示本周期有有效末制导速度
+```
+
+判断关系：
+
+```text
+若 target_relation=1 且 local_height_valid=True 且 AV_DN_SHAPE_EN=1：
+  vz_cmd_ned ~= vz_raw_ned * descent_scale
+
+若 local_height <= AV_LOCAL_H_STOP 且 los_pitch_down <= AV_PITCH_STOP：
+  descent_scale 接近 0
+  vz_cmd_ned 接近 0
+
+若 local_height >= AV_LOCAL_H_FULL 或 los_pitch_down >= AV_PITCH_FULL：
+  descent_scale 接近 1
+  vz_cmd_ned 接近 vz_raw_ned
+```
+
+高目标或本地高度无效时：
+
+```text
+target_relation=2 或 local_height_valid=False
+vz_cmd_ned 应基本等于 vz_raw_ned
+```
+
+#### 5.5.5 推荐飞行动作顺序
+
+一次完整实测建议按以下顺序做：
+
+```text
+1. Position 起飞到 2~3 m，静止悬停 5~10 s。
+2. 吊舱锁定低目标，保持 Position，记录锁定时 pix_offset、gimbal_pitch、target_vec_ned_z。
+3. 切入 Offboard，保持 3~5 s，观察飞机是否一边接近一边下降。
+4. 当高度接近 1 m 左右时，重点观察 descent_scale 和 vz_cmd_ned 是否明显减小。
+5. 切回 Position，确认飞机停止末制导并悬停。
+6. 如状态稳定，再把 AV_FORWARD_V 从 0.3 逐步提高到 0.5、0.8 或实测目标值。
+```
+
+每次只改一个参数，优先调整顺序：
+
+```text
+1. AV_FORWARD_V：决定整体接近速度。
+2. AV_MAX_VZ：限制最大下降速度。
+3. AV_PITCH_STOP / AV_PITCH_FULL：决定小俯角时下降被抑制的强弱。
+4. AV_LOCAL_H_STOP / AV_LOCAL_H_FULL：决定低空保护开始和完全放开的高度范围。
+```
+
+#### 5.5.6 飞后日志导出和判据
+
+飞后导出完整 Excel：
+
+```sh
+.venv-pyulog/bin/python Tools/attack_vision_ulog_to_xlsx.py log/log_xxx.ulg
+```
+
+再导出关键分析数据：
+
+```sh
+.venv-pyulog/bin/python Tools/attack_vision_key_data_xlsx.py outputs/log_xxx.xlsx
+```
+
+建议画图：
+
+```text
+time - local_height
+time - los_pitch_down_rad
+time - vz_raw_ned / vz_cmd_ned / vehicle_local_position.vz
+time - height_scale / angle_scale / descent_scale
+time - target_vec_ned_z
+time - pix_offset_x / pix_offset_y
+```
+
+期望现象：
+
+```text
+低空且小俯角时：vz_cmd_ned 明显小于 vz_raw_ned。
+高度足够高或俯角足够大时：vz_cmd_ned 接近 vz_raw_ned。
+水平速度方向不应因为下降整形发生明显变化。
+切回 Position 或失锁后：guidance_command_valid 变为 False，末制导速度停止更新。
+```
+
+若发现飞机实际下降仍明显快于 `vz_cmd_ned`，优先检查：
+
+```text
+vehicle_local_position.vz 是否跟随 trajectory_setpoint.velocity[2]
+Position 模式是否也掉高
+电池重量、推重比、MPC_Z_VEL_*、MPC_THR_*、MPC_TKO_* 等垂向控制相关参数
+日志中是否存在高度估计跳变或本地高度漂移
+```
+
+### 5.6 人工退出和恢复
 
 末制导过程中切 Position：
 
@@ -1010,7 +1214,7 @@ attack_vision 恢复末制导
 trajectory_setpoint 恢复按 target_vec_ned 发布速度
 ```
 
-### 5.6 失锁和帧超时保护
+### 5.7 失锁和帧超时保护
 
 飞行中短暂取消目标锁定：
 
@@ -1034,7 +1238,7 @@ frame_age_ms 增大
 停止有效末制导控制
 ```
 
-### 5.7 结束实机飞行测试
+### 5.8 结束实机飞行测试
 
 退出末制导并回到 Position：
 
