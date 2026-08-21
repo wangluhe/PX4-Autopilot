@@ -343,6 +343,12 @@ ulog2csv -m attack_vision_status <path-to-log.ulg>
 `los_pitch_down_rad`、`vz_raw_ned`、`height_scale`、`angle_scale`、
 `descent_scale`、`vz_cmd_ned` 和 `guidance_timestamp`。
 
+论文分析还可使用 `los_gimbal_raw_x/y/z` 与 `los_gimbal_x/y/z` 对比滤波前后
+视线变化；`frame_sequence` 和 `frame_receive_timestamp` 用于检查有效帧顺序、
+接收周期和帧龄。`descent_shaping_active`、`vz_saturated`、
+`attack_vision_control_active` 和 `control_source` 用于区分下降整形、速度限幅
+以及实际控制来源。这些字段只记录状态，不改变原有制导逻辑。
+
 ### 8.3 监控uORB话题
 ```bash
 # 查看Offboard控制模式

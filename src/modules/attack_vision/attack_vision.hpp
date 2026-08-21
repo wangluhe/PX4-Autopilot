@@ -109,6 +109,7 @@ private:
 	uint8_t _buf[FRAME_LEN]{};  ///< 接收缓冲区
 	int _buf_len{0};  ///< 当前缓冲区数据长度
 	uint64_t _last_frame_time_us{0};  ///< 最后一次有效帧的时间戳（用于超时检测）
+	uint32_t _frame_sequence{0};  ///< 通过校验的有效吊舱帧序号
 	static constexpr uint64_t FRAME_TIMEOUT_US = 200000;  ///< 200ms无有效帧视为失效
 	bool try_read_frame();  ///< 尝试从串口读取一帧数据
 	bool validate_frame(const uint8_t *frame);  ///< 校验帧格式（帧头、帧尾、异或校验）
@@ -125,9 +126,11 @@ private:
 	float _gimbal_roll{0.0f};   // 吊舱横滚角（弧度）
 	float _gimbal_pitch{0.0f};  // 吊舱俯仰角（弧度）
 	float _gimbal_yaw{0.0f};    // 吊舱方位角（弧度）
+	matrix::Vector3f _last_raw_los_gimbal{}; // 最近一次未经滤波的吊舱坐标系LOS
 	matrix::Vector3f _last_los_gimbal{};      // 最近一次像素脱靶量转换出的吊舱FRD视线
 	matrix::Vector3f _last_target_vec_ned{};  // 最近一次转换到NED的目标视线
 	bool _last_los_gimbal_valid{false};
+	bool _last_raw_los_gimbal_valid{false};
 	bool _last_target_vec_ned_valid{false};
 	GuidanceCommand _last_guidance_command{};
 	hrt_abstime _last_guidance_command_time_us{0};

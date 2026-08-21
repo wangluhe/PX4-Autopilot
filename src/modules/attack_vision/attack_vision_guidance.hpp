@@ -65,6 +65,9 @@ struct GuidanceCommand {
 	float height_scale{1.0f};
 	float angle_scale{1.0f};
 	float descent_scale{1.0f};
+	bool descent_shaping_active{false};
+	bool vz_saturated{false};
+	bool horizontal_speed_saturated{false};
 	TargetVerticalRelation target_relation{TargetVerticalRelation::LEVEL};
 	bool local_height_valid{false};
 	bool valid{false};

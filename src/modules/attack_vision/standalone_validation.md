@@ -165,6 +165,26 @@ target_vec_ned_*: 转到 NED 后的单位目标方向
 滤波效果时，重点导出 `timestamp`、`pix_offset_x/y`、`los_gimbal_x/y/z`、
 `target_vec_ned_x/y/z`、`frame_valid`、`lock_active` 和 `frame_age_ms`。
 
+论文数据采集时还应保留以下新增字段：
+
+```text
+los_gimbal_raw_valid
+los_gimbal_raw_x/y/z       # 未经过一阶低通的吊舱坐标系LOS
+los_gimbal_x/y/z           # 当前制导使用的滤波后LOS
+los_filter_active          # AV_LOS_TAU > 0
+frame_sequence             # 通过协议校验的有效帧序号
+frame_receive_timestamp    # PX4接收该有效帧的时间戳，不是吊舱原生时间戳
+descent_shaping_active     # 当前下降指令是否经过低目标整形
+vz_saturated               # 几何垂向速度是否被AV_MAX_VZ限幅
+horizontal_speed_saturated # 当前算法没有水平速度限幅，正常情况下为False
+attack_vision_control_active
+control_source             # 0=无视觉接管，1=attack_vision，2=外部任务
+```
+
+CGTD055 当前协议未提供目标置信度、目标框、目标ID或吊舱原生时间戳，
+因此本模块不虚构这些字段。`frame_receive_timestamp` 和
+`frame_sequence` 只能用于分析 PX4 接收时序、丢帧和延迟。
+
 `AV_LOS_TAU` 使用一阶低通时间常数，单位为秒。吊舱协议反馈频率为25Hz；默认
 `0.10` 可先用于抑制像素抖动。设置为 `0` 时旁路滤波。滤波只在收到新的有效
 吊舱帧时推进一次，工作队列重复运行不会重复衰减同一帧数据。失锁、帧超时或

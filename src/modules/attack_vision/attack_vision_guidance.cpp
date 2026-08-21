@@ -109,9 +109,9 @@ bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vecto
 	}
 
 	if (!PX4_ISFINITE(shaping.local_height_stop) || !PX4_ISFINITE(shaping.local_height_full) ||
-		 !PX4_ISFINITE(shaping.pitch_stop_rad) || !PX4_ISFINITE(shaping.pitch_full_rad) ||
-		 shaping.local_height_stop < 0.0f || shaping.local_height_full <= shaping.local_height_stop ||
-		 shaping.pitch_stop_rad < 0.0f || shaping.pitch_full_rad <= shaping.pitch_stop_rad) {
+		!PX4_ISFINITE(shaping.pitch_stop_rad) || !PX4_ISFINITE(shaping.pitch_full_rad) ||
+		shaping.local_height_stop < 0.0f || shaping.local_height_full <= shaping.local_height_stop ||
+		shaping.pitch_stop_rad < 0.0f || shaping.pitch_full_rad <= shaping.pitch_stop_rad) {
 		return false;
 	}
 
@@ -120,7 +120,9 @@ bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vecto
 
 	cmd.vx_ned = target_dir_ned(0) * max_forward_v;
 	cmd.vy_ned = target_dir_ned(1) * max_forward_v;
-	cmd.vz_raw_ned = math::constrain(target_dir_ned(2) * max_forward_v, -max_vz, max_vz);
+	const float vz_unconstrained_ned = target_dir_ned(2) * max_forward_v;
+	cmd.vz_raw_ned = math::constrain(vz_unconstrained_ned, -max_vz, max_vz);
+	cmd.vz_saturated = fabsf(vz_unconstrained_ned - cmd.vz_raw_ned) > 1e-4f;
 	cmd.vz_ned = cmd.vz_raw_ned;
 	cmd.local_height = veh.local_height;
 	cmd.local_height_valid = veh.local_height_valid;
@@ -135,6 +137,7 @@ bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vecto
 			cmd.angle_scale = smoothstep(shaping.pitch_stop_rad, shaping.pitch_full_rad, cmd.los_pitch_down_rad);
 
 			if (shaping.enabled) {
+				cmd.descent_shaping_active = true;
 				cmd.descent_scale = math::max(cmd.height_scale, cmd.angle_scale);
 				cmd.vz_ned = cmd.vz_raw_ned * cmd.descent_scale;
 			}

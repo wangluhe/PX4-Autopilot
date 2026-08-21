@@ -369,6 +369,7 @@ bool AttackVision::try_read_frame()
 		// 校验帧格式
 		if (validate_frame(_buf)) {
 		_last_frame_time_us = hrt_absolute_time();
+		_frame_sequence++;
 		parse_frame_data();
 		_buf_len = 0;  // 重置缓冲区
 
@@ -424,6 +425,7 @@ bool AttackVision::try_read_frame()
 			bool ok = validate_frame(_buf);
 			if (ok) {
 				_last_frame_time_us = hrt_absolute_time();
+				_frame_sequence++;
 				parse_frame_data();
 				_buf_len = 0; // 统一重置缓冲区
 				return true;
@@ -692,11 +694,14 @@ void AttackVision::reset_guidance_state()
 	_pix_offset_y = 0;
 	_buf_len = 0;
 	_last_frame_time_us = 0;
+	_frame_sequence = 0;
+	_last_raw_los_gimbal.zero();
 	_last_los_gimbal.zero();
 	_last_target_vec_ned.zero();
 	_last_guidance_command = GuidanceCommand{};
 	_last_guidance_command_time_us = 0;
 	_last_los_gimbal_valid = false;
+	_last_raw_los_gimbal_valid = false;
 	_last_target_vec_ned_valid = false;
 	reset_los_filter();
 }
@@ -1045,6 +1050,9 @@ bool AttackVision::build_target_los_gimbal(
 		reset_los_filter();
 		return false;
 	}
+
+	_last_raw_los_gimbal = raw_los_gimbal;
+	_last_raw_los_gimbal_valid = true;
 
 	if (!update_los_filter(raw_los_gimbal, los_gimbal)) {
 		return false;
@@ -1461,7 +1469,10 @@ void AttackVision::Run()
 
 	if (!frame_valid_recent || !_lock_active) {
 		_last_los_gimbal_valid = false;
+		_last_raw_los_gimbal_valid = false;
 		_last_target_vec_ned_valid = false;
+		_last_guidance_command = GuidanceCommand{};
+		_last_guidance_command_time_us = 0;
 		reset_los_filter();
 	}
 
@@ -1484,6 +1495,10 @@ void AttackVision::Run()
 	status.gimbal_pitch_rad = _gimbal_pitch;
 	status.gimbal_yaw_rad = _gimbal_yaw;
 	status.los_gimbal_valid = _last_los_gimbal_valid;
+	status.los_gimbal_raw_valid = _last_raw_los_gimbal_valid;
+	status.los_gimbal_raw_x = _last_raw_los_gimbal(0);
+	status.los_gimbal_raw_y = _last_raw_los_gimbal(1);
+	status.los_gimbal_raw_z = _last_raw_los_gimbal(2);
 	status.los_gimbal_x = _last_los_gimbal(0);
 	status.los_gimbal_y = _last_los_gimbal(1);
 	status.los_gimbal_z = _last_los_gimbal(2);
@@ -1501,7 +1516,16 @@ void AttackVision::Run()
 	status.angle_scale = _last_guidance_command.angle_scale;
 	status.descent_scale = _last_guidance_command.descent_scale;
 	status.vz_cmd_ned = _last_guidance_command.vz_ned;
+	status.los_filter_active = _param_av_los_tau.get() > 0.0f;
+	status.descent_shaping_active = _last_guidance_command.descent_shaping_active;
+	status.vz_saturated = _last_guidance_command.vz_saturated;
+	status.horizontal_speed_saturated = _last_guidance_command.horizontal_speed_saturated;
+	status.attack_vision_control_active = can_control;
+	status.control_source = _external_mission_active ? attack_vision_status_s::CONTROL_SOURCE_EXTERNAL_MISSION :
+		(can_control ? attack_vision_status_s::CONTROL_SOURCE_ATTACK_VISION : attack_vision_status_s::CONTROL_SOURCE_NONE);
 	status.guidance_timestamp = _last_guidance_command_time_us;
+	status.frame_receive_timestamp = _last_frame_time_us;
+	status.frame_sequence = _frame_sequence;
 	const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (frame_age_us / 1000) : UINT32_MAX;
 	status.frame_age_ms = (frame_age_ms > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(frame_age_ms);
 	status.module_state = static_cast<uint8_t>(_module_state);

@@ -62,6 +62,10 @@ HEADERS += [
 	"着地（landed）", "可能着地（maybe_landed）", "地面接触（ground_contact）", "正在下降（in_descend）",
 	"垂直位置精度（pos_vert_accuracy）", "速度检验比（vel_test_ratio）", "高度检验比（hgt_test_ratio）", "估计器故障标志（filter_fault_flags）",
 	"本地高度无效（local_altitude_invalid）", "本地速度无效（local_velocity_invalid）", "失效保护电池告警（failsafe_battery_warning）", "电池不健康（battery_unhealthy）",
+	"原始LOS有效（los_gimbal_raw_valid）", "原始LOS-X（los_gimbal_raw_x）", "原始LOS-Y（los_gimbal_raw_y）", "原始LOS-Z（los_gimbal_raw_z）",
+	"滤波是否启用（los_filter_active）", "下降整形是否生效（descent_shaping_active）", "垂向速度是否限幅（vz_saturated）",
+	"水平速度是否限幅（horizontal_speed_saturated）", "视觉接管是否生效（attack_vision_control_active）",
+	"控制来源（control_source:0无1视觉2外部任务）", "帧接收时间戳（frame_receive_timestamp_us）", "有效帧序号（frame_sequence）",
 ]
 
 
@@ -151,6 +155,9 @@ def build_row(attack, samples, segment):
 		land.get("landed"), land.get("maybe_landed"), land.get("ground_contact"), land.get("in_descend"),
 		estimator.get("pos_vert_accuracy"), estimator.get("vel_test_ratio"), estimator.get("hgt_test_ratio"), estimator.get("filter_fault_flags"),
 		failsafe.get("local_altitude_invalid"), failsafe.get("local_velocity_invalid"), failsafe.get("battery_warning"), failsafe.get("battery_unhealthy"),
+		attack.get("los_gimbal_raw_valid"), attack.get("los_gimbal_raw_x"), attack.get("los_gimbal_raw_y"), attack.get("los_gimbal_raw_z"),
+		attack.get("los_filter_active"), attack.get("descent_shaping_active"), attack.get("vz_saturated"), attack.get("horizontal_speed_saturated"),
+		attack.get("attack_vision_control_active"), attack.get("control_source"), attack.get("frame_receive_timestamp"), attack.get("frame_sequence"),
 	]
 	return row
 
@@ -163,6 +170,9 @@ def export(source_path, output_path):
 		"lock_active", "frame_valid", "los_gimbal_valid", "target_vec_ned_valid", "module_state",
 		"guidance_command_valid", "local_height_valid", "target_relation", "local_height", "vz_raw_ned",
 		"height_scale", "angle_scale", "descent_scale", "vz_cmd_ned", "guidance_timestamp",
+		"los_gimbal_raw_valid", "los_gimbal_raw_x", "los_gimbal_raw_y", "los_gimbal_raw_z",
+		"los_filter_active", "descent_shaping_active", "vz_saturated", "horizontal_speed_saturated",
+		"attack_vision_control_active", "control_source", "frame_receive_timestamp", "frame_sequence",
 	])
 	topics = {name: read_topic(source, name, fields) for name, fields in TOPIC_FIELDS.items()}
 	segment_sheet = source["Analysis_Segments"]
