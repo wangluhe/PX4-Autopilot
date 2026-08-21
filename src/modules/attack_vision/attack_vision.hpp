@@ -129,6 +129,8 @@ private:
 	matrix::Vector3f _last_target_vec_ned{};  // 最近一次转换到NED的目标视线
 	bool _last_los_gimbal_valid{false};
 	bool _last_target_vec_ned_valid{false};
+	GuidanceCommand _last_guidance_command{};
+	hrt_abstime _last_guidance_command_time_us{0};
 	AlphaFilter<matrix::Vector3f> _los_filter{}; ///< 吊舱坐标系下的LOS一阶低通
 	bool _los_filter_initialized{false};
 	uint64_t _los_filter_sample_time_us{0};
@@ -235,6 +237,11 @@ private:
 		(ParamFloat<px4::params::AV_MNT_YAW>) _param_av_mnt_yaw,
 		(ParamFloat<px4::params::AV_MAX_VZ>) _param_av_max_vz,
 		(ParamFloat<px4::params::AV_LOS_TAU>) _param_av_los_tau,
+		(ParamInt<px4::params::AV_DN_SHAPE_EN>) _param_av_dn_shape_en,
+		(ParamFloat<px4::params::AV_LOCAL_H_STOP>) _param_av_local_h_stop,
+		(ParamFloat<px4::params::AV_LOCAL_H_FULL>) _param_av_local_h_full,
+		(ParamFloat<px4::params::AV_PITCH_STOP>) _param_av_pitch_stop,
+		(ParamFloat<px4::params::AV_PITCH_FULL>) _param_av_pitch_full,
 		(ParamInt<px4::params::AV_SIM_PIX_EN>) _param_av_sim_pix_en,
 		(ParamInt<px4::params::AV_SIM_PIX_X>) _param_av_sim_pix_x,
 		(ParamInt<px4::params::AV_SIM_PIX_Y>) _param_av_sim_pix_y,
