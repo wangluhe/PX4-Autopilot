@@ -9,6 +9,7 @@
 3. **自动制导**：当锁定有效时，自动切换到Offboard模式并发布速度控制指令
 4. **安全保护**：失锁或超时（200ms无数据）时，自动切换回悬停模式
 5. **LOS滤波**：对吊舱坐标系下的单位LOS向量使用一阶低通，抑制像素抖动
+6. **下降整形**：目标低于飞机时，使用PX4本地高度和LOS向下俯角平滑减小低空下降指令
 
 ## 二、硬件连接
 
@@ -103,6 +104,11 @@ make px4_fmu-v6xrt_default upload
 | `AV_DEAD` | FLOAT | 5.0 | 像素死区阈值（像素，小于此值不产生控制） |
 | `AV_MAX_V` | FLOAT | 1.0 | 最大速度限制（m/s） |
 | `AV_LOS_TAU` | FLOAT | 0.10 | LOS一阶低通时间常数（秒）；0=关闭滤波 |
+| `AV_DN_SHAPE_EN` | INT32 | 0 | 低目标下降整形开关；首次验证后设为1 |
+| `AV_LOCAL_H_STOP` | FLOAT | 0.8 | 小俯角下降完全抑制的本地高度（m） |
+| `AV_LOCAL_H_FULL` | FLOAT | 2.0 | 不再按高度抑制下降的本地高度（m） |
+| `AV_PITCH_STOP` | FLOAT | 3.0 | 小于该LOS向下俯角时角度缩放为0（deg） |
+| `AV_PITCH_FULL` | FLOAT | 12.0 | 大于该LOS向下俯角时角度缩放为1（deg） |
 
 ### 5.2 参数设置方法
 
@@ -125,6 +131,11 @@ param set AV_KP 0.001
 param set AV_DEAD 5.0
 param set AV_MAX_V 1.0
 param set AV_LOS_TAU 0.10
+param set AV_LOCAL_H_STOP 0.8
+param set AV_LOCAL_H_FULL 2.0
+param set AV_PITCH_STOP 3.0
+param set AV_PITCH_FULL 12.0
+param set AV_DN_SHAPE_EN 1
 
 # 保存参数
 param save
@@ -150,6 +161,12 @@ param save
   - 增大可进一步抑制像素抖动，但会增加目标方向响应延迟
   - 减小可提高响应速度，但对吊舱反馈噪声更敏感
   - 推荐先使用 `0.05 ~ 0.15 s`；设置为 `0` 旁路滤波
+
+- **低目标下降整形**：
+  - 只在 `target_vec_ned_z > 0`、本地高度有效且 `AV_DN_SHAPE_EN=1` 时生效
+  - `AV_LOCAL_H_STOP/FULL` 使用 `-vehicle_local_position.z`，是相对EKF本地原点高度，不是地形AGL
+  - 高目标、水平目标或本地高度无效时保持原始LOS垂向速度
+  - 紧急回滚只需执行 `param set AV_DN_SHAPE_EN 0`
 
 ## 六、模块启动
 
@@ -321,6 +338,10 @@ ulog2csv -m attack_vision_status <path-to-log.ulg>
 # 方法3：通过串口终端
 # 连接飞控串口，查看实时输出
 ```
+
+下降整形重点日志字段：`target_relation`、`local_height_valid`、`local_height`、
+`los_pitch_down_rad`、`vz_raw_ned`、`height_scale`、`angle_scale`、
+`descent_scale`、`vz_cmd_ned` 和 `guidance_timestamp`。
 
 ### 8.3 监控uORB话题
 ```bash
