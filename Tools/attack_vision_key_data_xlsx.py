@@ -38,6 +38,10 @@ HEADERS = [
 	"吊舱LOS-X（los_gimbal_x）", "吊舱LOS-Y（los_gimbal_y）", "吊舱LOS-Z（los_gimbal_z）",
 	"NED目标向量-N（target_vec_ned_x）", "NED目标向量-E（target_vec_ned_y）", "NED目标向量-D（target_vec_ned_z）",
 	"LOS俯角/度-向下为正（los_pitch_deg_down_positive）",
+	"目标垂直关系（target_relation:0水平1低2高）", "制导指令有效（guidance_command_valid）",
+	"本地高度有效（local_height_valid）", "整形使用本地高度（local_height）",
+	"整形前下降速度（vz_raw_ned）", "高度缩放（height_scale）", "角度缩放（angle_scale）",
+	"下降联合缩放（descent_scale）", "整形后下降速度（vz_cmd_ned）", "制导计算时间戳（guidance_timestamp_us）",
 	"期望北向速度（trajectory_vx）", "期望东向速度（trajectory_vy）", "期望下降速度（trajectory_vz）",
 	"期望水平速度（trajectory_vxy）", "期望三维速度（trajectory_vxyz）",
 	"实际北向速度（local_vx）", "实际东向速度（local_vy）", "实际下降速度（local_vz）",
@@ -131,6 +135,9 @@ def build_row(attack, samples, segment):
 		math.degrees(attack["gimbal_pitch_rad"]) if finite(attack.get("gimbal_pitch_rad")) else None,
 		math.degrees(attack["gimbal_yaw_rad"]) if finite(attack.get("gimbal_yaw_rad")) else None,
 		attack.get("los_gimbal_x"), attack.get("los_gimbal_y"), attack.get("los_gimbal_z"), los_n, los_e, los_d, los_pitch,
+		attack.get("target_relation"), attack.get("guidance_command_valid"), attack.get("local_height_valid"),
+		attack.get("local_height"), attack.get("vz_raw_ned"), attack.get("height_scale"), attack.get("angle_scale"),
+		attack.get("descent_scale"), attack.get("vz_cmd_ned"), attack.get("guidance_timestamp"),
 		cmd_vx, cmd_vy, cmd_vz, norm(cmd_vx, cmd_vy), norm(cmd_vx, cmd_vy, cmd_vz),
 		vx, vy, vz, norm(vx, vy), vz - cmd_vz if finite(vz) and finite(cmd_vz) else None,
 		altitude, altitude_sp, altitude - altitude_sp if finite(altitude) and finite(altitude_sp) else None,
@@ -154,6 +161,8 @@ def export(source_path, output_path):
 		"time_s", "gimbal_roll_rad", "gimbal_pitch_rad", "gimbal_yaw_rad", "los_gimbal_x", "los_gimbal_y", "los_gimbal_z",
 		"target_vec_ned_x", "target_vec_ned_y", "target_vec_ned_z", "frame_age_ms", "pix_offset_x", "pix_offset_y",
 		"lock_active", "frame_valid", "los_gimbal_valid", "target_vec_ned_valid", "module_state",
+		"guidance_command_valid", "local_height_valid", "target_relation", "local_height", "vz_raw_ned",
+		"height_scale", "angle_scale", "descent_scale", "vz_cmd_ned", "guidance_timestamp",
 	])
 	topics = {name: read_topic(source, name, fields) for name, fields in TOPIC_FIELDS.items()}
 	segment_sheet = source["Analysis_Segments"]
