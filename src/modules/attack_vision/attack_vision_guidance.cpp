@@ -8,6 +8,12 @@
 namespace attack_vision_guidance
 {
 
+static float smoothstep(float edge0, float edge1, float value)
+{
+	const float t = math::constrain((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+	return t * t * (3.0f - 2.0f * t);
+}
+
 bool build_vision_target(int16_t pix_offset_x, int16_t pix_offset_y, bool lock_active,
 			VisionTarget &target)
 {
@@ -95,9 +101,17 @@ bool compose_gimbal_ned_pose(float vehicle_yaw, float mount_yaw,
 }
 
 bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vector3f &target_vec_ned,
-			float max_forward_v, float max_vz, GuidanceCommand &cmd)
+			float max_forward_v, float max_vz, const DescentShapingConfig &shaping, GuidanceCommand &cmd)
 {
-	if (!veh.valid || target_vec_ned.norm() <= 1e-3f) {
+	if (!veh.valid || !PX4_ISFINITE(max_forward_v) || !PX4_ISFINITE(max_vz) ||
+		max_forward_v < 0.0f || max_vz < 0.0f || target_vec_ned.norm() <= 1e-3f) {
+		return false;
+	}
+
+	if (!PX4_ISFINITE(shaping.local_height_stop) || !PX4_ISFINITE(shaping.local_height_full) ||
+		 !PX4_ISFINITE(shaping.pitch_stop_rad) || !PX4_ISFINITE(shaping.pitch_full_rad) ||
+		 shaping.local_height_stop < 0.0f || shaping.local_height_full <= shaping.local_height_stop ||
+		 shaping.pitch_stop_rad < 0.0f || shaping.pitch_full_rad <= shaping.pitch_stop_rad) {
 		return false;
 	}
 
@@ -106,7 +120,30 @@ bool build_guidance_command(const VehicleGuidanceState &veh, const matrix::Vecto
 
 	cmd.vx_ned = target_dir_ned(0) * max_forward_v;
 	cmd.vy_ned = target_dir_ned(1) * max_forward_v;
-	cmd.vz_ned = math::constrain(target_dir_ned(2) * max_forward_v, -max_vz, max_vz);
+	cmd.vz_raw_ned = math::constrain(target_dir_ned(2) * max_forward_v, -max_vz, max_vz);
+	cmd.vz_ned = cmd.vz_raw_ned;
+	cmd.local_height = veh.local_height;
+	cmd.local_height_valid = veh.local_height_valid;
+	const float horizontal_norm = sqrtf(target_dir_ned(0) * target_dir_ned(0) + target_dir_ned(1) * target_dir_ned(1));
+	cmd.los_pitch_down_rad = atan2f(target_dir_ned(2), horizontal_norm);
+
+	if (target_dir_ned(2) > 1e-4f) {
+		cmd.target_relation = TargetVerticalRelation::BELOW;
+
+		if (veh.local_height_valid) {
+			cmd.height_scale = smoothstep(shaping.local_height_stop, shaping.local_height_full, veh.local_height);
+			cmd.angle_scale = smoothstep(shaping.pitch_stop_rad, shaping.pitch_full_rad, cmd.los_pitch_down_rad);
+
+			if (shaping.enabled) {
+				cmd.descent_scale = math::max(cmd.height_scale, cmd.angle_scale);
+				cmd.vz_ned = cmd.vz_raw_ned * cmd.descent_scale;
+			}
+		}
+
+	} else if (target_dir_ned(2) < -1e-4f) {
+		cmd.target_relation = TargetVerticalRelation::ABOVE;
+	}
+
 	cmd.target_roll = veh.veh_roll;
 	cmd.target_pitch = veh.veh_pitch;
 	cmd.target_yaw = matrix::wrap_pi(atan2f(target_dir_ned(1), target_dir_ned(0)));
