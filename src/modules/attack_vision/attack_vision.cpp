@@ -172,6 +172,9 @@ int AttackVision::print_usage(const char *reason)
 		- AV_FORWARD_V: 当前LOS制导前向接近速度限制
 		- AV_MAX_VZ: 当前LOS制导垂向速度限制
 		- AV_LOS_TAU: LOS一阶低通时间常数（秒，0表示关闭）
+		- AV_DN_SHAPE_EN: 低目标下降速度整形开关
+		- AV_LOCAL_H_STOP/AV_LOCAL_H_FULL: 本地高度整形区间
+		- AV_PITCH_STOP/AV_PITCH_FULL: LOS向下俯角整形区间
 		- AV_PIX_X_INV/AV_PIX_Y_INV: 像素脱靶量到相机FRD坐标的符号转换
 		- AV_GMB_YAW_INV/AV_GMB_PIT_INV/AV_GMB_ROLL_INV: 吊舱姿态角到PX4 FRD坐标的符号转换
 		- AV_MNT_YAW: 吊舱机械yaw零位相对机头航向的安装偏差
@@ -691,6 +694,8 @@ void AttackVision::reset_guidance_state()
 	_last_frame_time_us = 0;
 	_last_los_gimbal.zero();
 	_last_target_vec_ned.zero();
+	_last_guidance_command = GuidanceCommand{};
+	_last_guidance_command_time_us = 0;
 	_last_los_gimbal_valid = false;
 	_last_target_vec_ned_valid = false;
 	reset_los_filter();
@@ -939,6 +944,10 @@ bool AttackVision::check_guidance_ready()
 	const float fov_v_deg = _param_av_fov_v.get();
 	const float mount_yaw_deg = _param_av_mnt_yaw.get();
 	const float los_tau_s = _param_av_los_tau.get();
+	const float local_h_stop = _param_av_local_h_stop.get();
+	const float local_h_full = _param_av_local_h_full.get();
+	const float pitch_stop_deg = _param_av_pitch_stop.get();
+	const float pitch_full_deg = _param_av_pitch_full.get();
 	const int cam_w = _param_av_cam_w.get();
 	const int cam_h = _param_av_cam_h.get();
 
@@ -946,9 +955,13 @@ bool AttackVision::check_guidance_ready()
 	if (!PX4_ISFINITE(max_forward_v) || !PX4_ISFINITE(max_vz) ||
 		!PX4_ISFINITE(mount_yaw_deg) ||
 		!PX4_ISFINITE(los_tau_s) ||
+		!PX4_ISFINITE(local_h_stop) || !PX4_ISFINITE(local_h_full) ||
+		!PX4_ISFINITE(pitch_stop_deg) || !PX4_ISFINITE(pitch_full_deg) ||
 		!PX4_ISFINITE(fov_h_deg) || !PX4_ISFINITE(fov_v_deg) ||
 		max_forward_v < 0.0f || max_vz < 0.0f ||
 		los_tau_s < 0.0f || los_tau_s > 2.0f ||
+		local_h_stop < 0.0f || local_h_full <= local_h_stop ||
+		pitch_stop_deg < 0.0f || pitch_full_deg <= pitch_stop_deg || pitch_full_deg > 90.0f ||
 		mount_yaw_deg < -180.0f || mount_yaw_deg > 180.0f ||
 		fov_h_deg <= 0.0f || fov_h_deg >= 179.0f ||
 		fov_v_deg <= 0.0f || fov_v_deg >= 179.0f ||
@@ -973,6 +986,13 @@ bool AttackVision::read_vehicle_guidance_state(VehicleGuidanceState &state)
 	state.veh_roll = euler_veh_ned.phi();
 	state.veh_pitch = euler_veh_ned.theta();
 	state.veh_yaw = euler_veh_ned.psi();
+
+	vehicle_local_position_s local_pos{};
+	if (_vehicle_local_position_sub.copy(&local_pos) && local_pos.z_valid && PX4_ISFINITE(local_pos.z)) {
+		state.local_height = math::max(-local_pos.z, 0.0f);
+		state.local_height_valid = true;
+	}
+
 	state.valid = true;
 	return true;
 }
@@ -1119,8 +1139,15 @@ bool AttackVision::build_guidance_command(
 	_last_target_vec_ned = target_vec_ned;
 	_last_target_vec_ned_valid = true;
 
+	DescentShapingConfig shaping{};
+	shaping.enabled = _param_av_dn_shape_en.get() != 0;
+	shaping.local_height_stop = _param_av_local_h_stop.get();
+	shaping.local_height_full = _param_av_local_h_full.get();
+	shaping.pitch_stop_rad = math::radians(_param_av_pitch_stop.get());
+	shaping.pitch_full_rad = math::radians(_param_av_pitch_full.get());
+
 	return attack_vision_guidance::build_guidance_command(veh, target_vec_ned,
-			_param_av_forward_v.get(), _param_av_max_vz.get(), cmd);
+			_param_av_forward_v.get(), _param_av_max_vz.get(), shaping, cmd);
 }
 
 void AttackVision::publish_guidance_command(const GuidanceCommand &cmd)
@@ -1128,6 +1155,9 @@ void AttackVision::publish_guidance_command(const GuidanceCommand &cmd)
 	if (!cmd.valid) {
 		return;
 	}
+
+	_last_guidance_command = cmd;
+	_last_guidance_command_time_us = hrt_absolute_time();
 
 	publish_attitude_velocity_control(
 		cmd.target_roll,
@@ -1461,6 +1491,17 @@ void AttackVision::Run()
 	status.target_vec_ned_x = _last_target_vec_ned(0);
 	status.target_vec_ned_y = _last_target_vec_ned(1);
 	status.target_vec_ned_z = _last_target_vec_ned(2);
+	status.guidance_command_valid = _last_guidance_command.valid;
+	status.local_height_valid = _last_guidance_command.local_height_valid;
+	status.target_relation = static_cast<uint8_t>(_last_guidance_command.target_relation);
+	status.local_height = _last_guidance_command.local_height;
+	status.los_pitch_down_rad = _last_guidance_command.los_pitch_down_rad;
+	status.vz_raw_ned = _last_guidance_command.vz_raw_ned;
+	status.height_scale = _last_guidance_command.height_scale;
+	status.angle_scale = _last_guidance_command.angle_scale;
+	status.descent_scale = _last_guidance_command.descent_scale;
+	status.vz_cmd_ned = _last_guidance_command.vz_ned;
+	status.guidance_timestamp = _last_guidance_command_time_us;
 	const uint64_t frame_age_ms = (_last_frame_time_us > 0) ? (frame_age_us / 1000) : UINT32_MAX;
 	status.frame_age_ms = (frame_age_ms > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(frame_age_ms);
 	status.module_state = static_cast<uint8_t>(_module_state);
