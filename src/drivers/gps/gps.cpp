@@ -430,12 +430,14 @@ int GPS::callback(GPSCallbackType type, void *data1, int data2, void *user)
 		return gps->setBaudrate(data2);
 
 	case GPSCallbackType::gotRTCMMessage:
+		// 接收机收到的 RTCM 改正信息由这里转发到 PX4 的 RTCM 注入链路，并记录到日志。
 		gps->publishRTCMCorrections((uint8_t *)data1, (size_t)data2);
 		gps->dumpGpsData((uint8_t *)data1, (size_t)data2, gps_dump_comm_mode_t::RTCM, false);
 		break;
 
 	case GPSCallbackType::gotRelativePositionMessage:
 		if (data1 && data2 == sizeof(sensor_gnss_relative_s)) {
+			// 双天线/移动基站模式下的相对位置消息，单独发布到 sensor_gnss_relative。
 			gps->publishRelativePosition(*static_cast<sensor_gnss_relative_s *>(data1));
 		}
 
@@ -447,6 +449,7 @@ int GPS::callback(GPSCallbackType type, void *data1, int data2, void *user)
 
 	case GPSCallbackType::setClock:
 
+		// GPS 给出可用 UTC 时间后，PX4 会尝试同步系统实时时钟。
 		px4_clock_gettime(CLOCK_REALTIME, &rtc_system_time);
 		timespec rtc_gps_time = *(timespec *)data1;
 		int drift_time = abs(rtc_system_time.tv_sec - rtc_gps_time.tv_sec);
@@ -1195,6 +1198,7 @@ void
 GPS::publish()
 {
 	if (_instance == Instance::Main || _is_gps_main_advertised.load()) {
+		// 这里把解析好的 _report_gps_pos 一次性发布到 uORB 的 sensor_gps 话题。
 		_report_gps_pos.device_id = get_device_id();
 
 		_report_gps_pos.selected_rtcm_instance = _selected_rtcm_instance;
@@ -1203,12 +1207,14 @@ GPS::publish()
 		_report_gps_pos_pub.publish(_report_gps_pos);
 		// Heading/yaw data can be updated at a lower rate than the other navigation data.
 		// The uORB message definition requires this data to be set to a NAN if no new valid data is available.
+		// 航向字段不是每次都会有新值，所以发布后先清空，避免旧值被误认为新观测。
 		_report_gps_pos.heading = NAN;
 		_is_gps_main_advertised.store(true);
 
 		if (_report_gps_pos.spoofing_state != _spoofing_state) {
 
 			if (_report_gps_pos.spoofing_state > sensor_gps_s::SPOOFING_STATE_NONE) {
+				// spoofing_state 发生变化时打印告警，便于地面站和日志里直接看到异常。
 				PX4_WARN("GPS spoofing detected! (state: %d)", _report_gps_pos.spoofing_state);
 			}
 
@@ -1218,6 +1224,7 @@ GPS::publish()
 		if (_report_gps_pos.jamming_state != _jamming_state) {
 
 			if (_report_gps_pos.jamming_state > sensor_gps_s::JAMMING_STATE_WARNING) {
+				// jamming_state 进入 Warning/Critical 时打印告警，并带上当前干扰强度指示值。
 				PX4_WARN("GPS jamming detected! (state: %d) (indicator: %d)", _report_gps_pos.jamming_state,
 					 (uint8_t)_report_gps_pos.jamming_indicator);
 			}
