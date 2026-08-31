@@ -310,6 +310,7 @@ GPS::GPS(const char *path, gps_driver_mode_t mode, GPSHelper::Interface interfac
 	_instance(instance)
 {
 	/* store port name */
+	// 拷贝串到 _port，确保不会溢出，并强制以 null 结尾
 	strncpy(_port, path, sizeof(_port) - 1);
 	/* enforce null termination */
 	_port[sizeof(_port) - 1] = '\0';
@@ -318,6 +319,7 @@ GPS::GPS(const char *path, gps_driver_mode_t mode, GPSHelper::Interface interfac
 	_report_gps_pos.heading_offset = NAN;
 
 	int32_t enable_sat_info = 0;
+	// 获取 GPS_SAT_INFO 参数值，决定是否启用卫星信息
 	param_get(param_find("GPS_SAT_INFO"), &enable_sat_info);
 
 	/* create satellite info data object if requested */
@@ -348,6 +350,7 @@ GPS::GPS(const char *path, gps_driver_mode_t mode, GPSHelper::Interface interfac
 		param_get(param_find(protocol_param_name), &protocol);
 
 		switch (protocol) {
+		// 根据参数值设置 GPS 模式
 		case 1: _mode = gps_driver_mode_t::UBX; break;
 #ifndef CONSTRAINED_FLASH
 
@@ -640,18 +643,18 @@ int GPS::setBaudrate(unsigned baud)
 }
 
 void GPS::initializeCommunicationDump()
-{
+{	// 获取 GPS_DUMP_COMM 参数句柄
 	param_t gps_dump_comm_ph = param_find("GPS_DUMP_COMM");
 	int32_t param_dump_comm;
-
+	// 如果参数句柄无效或获取参数失败，则直接返回
 	if (gps_dump_comm_ph == PARAM_INVALID || param_get(gps_dump_comm_ph, &param_dump_comm) != 0) {
 		return;
 	}
-
+	// 如果参数值不在 1 到 2 的范围内，则表示禁用通信日志，直接返回
 	if (param_dump_comm < 1 || param_dump_comm > 2) {
 		return; //dumping disabled
 	}
-
+	// 根据参数值设置通信日志模式
 	_dump_from_device = new gps_dump_s();
 	_dump_to_device = new gps_dump_s();
 
@@ -659,14 +662,15 @@ void GPS::initializeCommunicationDump()
 		PX4_ERR("failed to allocated dump data");
 		return;
 	}
-
+	// 清空通信日志数据结构
 	memset(_dump_to_device, 0, sizeof(gps_dump_s));
 	memset(_dump_from_device, 0, sizeof(gps_dump_s));
 
 	//make sure to use a large enough queue size, so that we don't lose messages. You may also want
 	//to increase the logger rate for that.
+	// 发布通信日志主题
 	_dump_communication_pub.advertise();
-
+	// 设置通信日志模式
 	_dump_communication_mode = (gps_dump_comm_mode_t)param_dump_comm;
 }
 
@@ -704,35 +708,41 @@ void GPS::dumpGpsData(uint8_t *data, size_t len, gps_dump_comm_mode_t mode, bool
 	}
 }
 
+// 初始化参数和设备，创建协议解析器，持续读串口/SPI 数据，
+// 解析后发布到 sensor_gps，同时维护速率、日志和自动探测。
 void
 GPS::run()
-{
+{	// 初始化参数
+	// 获取航向偏移参数
 	param_t handle = param_find("GPS_YAW_OFFSET");
 	float heading_offset = 0.f;
-
+	// 将航向偏移转换为弧度并限制在 [-π, π] 范围内
 	if (handle != PARAM_INVALID) {
 		param_get(handle, &heading_offset);
 		heading_offset = matrix::wrap_pi(math::radians(heading_offset));
 	}
-
+	// 获取动态模型参数，默认为 7：空中运动，最大加速度 < 2g
 	int32_t gps_ubx_dynmodel = 7; // default to 7: airborne with <2g acceleration
 	handle = param_find("GPS_UBX_DYNMODEL");
 
 	if (handle != PARAM_INVALID) {
 		param_get(handle, &gps_ubx_dynmodel);
 	}
-
+	// 获取 UBX 模式参数，默认为 Normal
 	handle = param_find("GPS_UBX_MODE");
 
 	GPSDriverUBX::UBXMode ubx_mode{GPSDriverUBX::UBXMode::Normal};
 
+	// 根据参数设置 UBX 模式
 	if (handle != PARAM_INVALID) {
 		int32_t gps_ubx_mode = 0;
 		param_get(handle, &gps_ubx_mode);
 
+		// 根据 GPS_UBX_MODE 参数值设置 ubx_mode
 		switch (gps_ubx_mode) {
 		case 1:  // heading
 			if (_instance == Instance::Main) {
+				// 主 GPS 为 Rover 模式，副 GPS 为 Moving Base 模式
 				ubx_mode = GPSDriverUBX::UBXMode::RoverWithMovingBase;
 
 			} else {
@@ -768,16 +778,16 @@ GPS::run()
 
 		}
 	}
-
+	// 获取 F9P UART2 波特率参数，默认为 57600
 	handle = param_find("GPS_UBX_BAUD2");
 	int32_t f9p_uart2_baudrate = 57600;
 
 	if (handle != PARAM_INVALID) {
 		param_get(handle, &f9p_uart2_baudrate);
 	}
-
+	// 获取 GNSS 系统参数，默认为接收机默认值
 	int32_t gnssSystemsParam = static_cast<int32_t>(GPSHelper::GNSSSystemsMask::RECEIVER_DEFAULTS);
-
+	// 根据实例选择参数名称
 	if (_instance == Instance::Main) {
 		handle = param_find("GPS_1_GNSS");
 		param_get(handle, &gnssSystemsParam);
@@ -786,14 +796,15 @@ GPS::run()
 		handle = param_find("GPS_2_GNSS");
 		param_get(handle, &gnssSystemsParam);
 	}
-
+	// 初始化通信日志
 	initializeCommunicationDump();
-
+	// 初始化速率测量变量
 	uint64_t last_rate_measurement = hrt_absolute_time();
 	unsigned last_rate_count = 0;
 
 	/* loop handling received serial bytes and also configuring in between */
 	while (!should_exit()) {
+		// 如果存在旧的协议解析器实例，则删除它并置空
 		if (_helper != nullptr) {
 			delete (_helper);
 			_helper = nullptr;
@@ -896,15 +907,17 @@ GPS::run()
 
 		_baudrate = _configured_baudrate;
 		GPSHelper::GPSConfig gpsConfig{};
+		// 设置 GNSS 系统掩码
 		gpsConfig.gnss_systems = static_cast<GPSHelper::GNSSSystemsMask>(gnssSystemsParam);
 
+		// 设置输出模式，如果是主 GPS 且通信日志模式为 RTCM，则输出 GPS 和 RTCM，否则只输出 GPS
 		if (_instance == Instance::Main && _dump_communication_mode == gps_dump_comm_mode_t::RTCM) {
 			gpsConfig.output_mode = GPSHelper::OutputMode::GPSAndRTCM;
 
 		} else {
 			gpsConfig.output_mode = GPSHelper::OutputMode::GPS;
 		}
-
+		// 设置接口协议掩码，默认为全部禁用
 		int32_t gps_ubx_cfg_intf = static_cast<int32_t>(GPSHelper::InterfaceProtocolsMask::ALL_DISABLED);
 		handle = param_find("GPS_UBX_CFG_INTF");
 
@@ -914,7 +927,9 @@ GPS::run()
 
 		gpsConfig.interface_protocols = static_cast<GPSHelper::InterfaceProtocolsMask>(gps_ubx_cfg_intf);
 
+		// 设置波特率，如果未指定，则使用默认值
 		if (_helper && _helper->configure(_baudrate, gpsConfig) == 0) {
+
 
 			/* reset report */
 			memset(&_report_gps_pos, 0, sizeof(_report_gps_pos));
@@ -974,22 +989,25 @@ GPS::run()
 				 * Without additional time this can lead to timeouts. */
 				receive_timeout += TIMEOUT_DUMP_ADD;
 			}
-
+			// 数据接收循环，持续从 GPS 设备读取数据并处理，直到退出条件满足
 			while ((helper_ret = _helper->receive(receive_timeout)) > 0 && !should_exit()) {
 
 				if (helper_ret & 1) {
+					// publish the GPS position and velocity data to the sensor_gps topic
 					publish();
 
 					last_rate_count++;
 				}
 
 				if (_p_report_sat_info && (helper_ret & 2)) {
+					// publish the satellite info data to the sensor_gnss_satellite_info topic
 					publishSatelliteInfo();
 				}
 
 				reset_if_scheduled();
 
 				/* measure update rate every 5 seconds */
+				// 计算数据接收速率和 RTCM 注入速率，每 5 秒更新一次
 				if (hrt_absolute_time() - last_rate_measurement > RATE_MEASUREMENT_PERIOD) {
 					float dt = (float)((hrt_absolute_time() - last_rate_measurement)) / 1000000.0f;
 					_rate = last_rate_count / dt;
